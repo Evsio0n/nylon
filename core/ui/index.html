@@ -6,6 +6,7 @@
   <title>nylon</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
   <link rel="stylesheet" href="/ui/style.css">
+  <script type="text/javascript" src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
 </head>
 <body>
   <nav class="container-fluid">
@@ -14,6 +15,7 @@
     </ul>
     <ul>
       <li><a href="#" data-page="dashboard" class="nav-link active">Dashboard</a></li>
+      <li><a href="#" data-page="topology" class="nav-link">Topology</a></li>
       <li><a href="#" data-page="nodes" class="nav-link">Nodes</a></li>
       <li><a href="#" data-page="routes" class="nav-link">Routes</a></li>
       <li><a href="#" data-page="neighbours" class="nav-link">Neighbours</a></li>
@@ -78,6 +80,22 @@
           </article>
         </div>
       </div>
+    </section>
+
+    <!-- Topology -->
+    <section id="page-topology" class="page" hidden>
+      <hgroup>
+        <h2>Topology</h2>
+        <p>Mesh network graph — drag nodes to rearrange, scroll to zoom</p>
+      </hgroup>
+      <article>
+        <div class="topology-legend">
+          <span class="legend-item"><span class="legend-dot router-dot"></span> Router</span>
+          <span class="legend-item"><span class="legend-dot client-dot"></span> Client</span>
+          <span class="legend-item"><span class="legend-dot self-dot"></span> This Node</span>
+        </div>
+        <div id="topology-canvas"></div>
+      </article>
     </section>
 
     <!-- Nodes -->

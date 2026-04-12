@@ -47,6 +47,7 @@ async function loadPage(page) {
   try {
     switch (page) {
       case 'dashboard': await loadDashboard(); break;
+      case 'topology': await loadTopology(); break;
       case 'nodes': await loadNodes(); break;
       case 'routes': await loadRoutes(); break;
       case 'neighbours': await loadNeighbours(); break;
@@ -95,6 +96,158 @@ async function loadDashboard() {
         <td>${(n.addresses || []).map(a => '<code>' + esc(a) + '</code>').join(', ') || '—'}</td>
       </tr>
     `).join('');
+  }
+}
+
+// --- Topology ---
+
+let topoNetwork = null;
+
+async function loadTopology() {
+  const [status, nodes, neighbours, routes] = await Promise.allSettled([
+    apiFetch('/status'),
+    apiFetch('/nodes'),
+    apiFetch('/neighbours'),
+    apiFetch('/routes'),
+  ]);
+
+  if (nodes.status !== 'fulfilled') return;
+  const myId = status.status === 'fulfilled' ? status.value.node_id : null;
+
+  // Build vis.js datasets
+  const nodeIds = new Set();
+  const edgeSet = new Set();
+  const visNodes = [];
+  const visEdges = [];
+
+  // Add all known nodes
+  for (const n of nodes.value) {
+    nodeIds.add(n.id);
+    const isSelf = n.id === myId;
+    visNodes.push({
+      id: n.id,
+      label: n.id.length > 12 ? n.id.substring(0, 12) + '…' : n.id,
+      title: n.id + '\n' + (n.is_router ? 'Router' : 'Client') +
+             (isSelf ? ' (this node)' : '') +
+             '\nAddresses: ' + ((n.addresses || []).join(', ') || 'none'),
+      color: {
+        background: isSelf ? '#1a6e2e' : (n.is_router ? '#6e5a1a' : '#2a3a4e'),
+        border: isSelf ? '#3fb950' : (n.is_router ? '#e5a00d' : '#4a6a8a'),
+        highlight: {
+          background: isSelf ? '#238c3c' : (n.is_router ? '#8a7020' : '#3a4a5e'),
+          border: isSelf ? '#5fd070' : (n.is_router ? '#f0b830' : '#5a7a9a'),
+        },
+        hover: {
+          background: isSelf ? '#238c3c' : (n.is_router ? '#8a7020' : '#3a4a5e'),
+          border: isSelf ? '#5fd070' : (n.is_router ? '#f0b830' : '#5a7a9a'),
+        },
+      },
+      font: { color: '#c9d1d9', size: 13 },
+      shape: isSelf ? 'diamond' : (n.is_router ? 'dot' : 'triangle'),
+      size: isSelf ? 22 : (n.is_router ? 18 : 14),
+      borderWidth: isSelf ? 3 : 2,
+    });
+  }
+
+  // Add edges from neighbours
+  if (neighbours.status === 'fulfilled') {
+    for (const nb of neighbours.value) {
+      const edgeKey = myId + '-' + nb.id;
+      const revKey = nb.id + '-' + myId;
+      if (!edgeSet.has(edgeKey) && !edgeSet.has(revKey)) {
+        edgeSet.add(edgeKey);
+        const bestMetric = nb.best_metric || 0;
+        const activeEps = (nb.endpoints || []).filter(e => e.active).length;
+        visEdges.push({
+          from: myId,
+          to: nb.id,
+          label: bestMetric > 0 ? 'metric ' + bestMetric : '',
+          title: 'Metric: ' + bestMetric +
+                 '\nEndpoints: ' + (nb.endpoints ? nb.endpoints.length : 0) +
+                 ' (active: ' + activeEps + ')' +
+                 '\nRoutes: ' + (nb.routes ? nb.routes.length : 0),
+          color: { color: 'rgba(229,160,13,0.4)', highlight: '#e5a00d', hover: '#e5a00d' },
+          font: { color: '#8b949e', size: 11, strokeWidth: 0 },
+          width: bestMetric > 0 ? Math.max(1, 4 - Math.floor(bestMetric / 100)) : 1,
+          smooth: { type: 'continuous' },
+        });
+      }
+    }
+  }
+
+  // Add inferred edges from routes (nexthop connections that aren't direct neighbours)
+  if (routes.status === 'fulfilled') {
+    for (const r of routes.value) {
+      if (!nodeIds.has(r.next_hop)) {
+        // Nexthop node not in our known list, add it as a ghost node
+        nodeIds.add(r.next_hop);
+        visNodes.push({
+          id: r.next_hop,
+          label: r.next_hop.length > 12 ? r.next_hop.substring(0, 12) + '…' : r.next_hop,
+          title: r.next_hop + '\n(inferred from route table)',
+          color: { background: '#2a2a2a', border: '#555', highlight: { background: '#3a3a3a', border: '#777' }, hover: { background: '#3a3a3a', border: '#777' } },
+          font: { color: '#666', size: 11 },
+          shape: 'dot',
+          size: 10,
+          borderWidth: 1,
+          borderWidthSelected: 2,
+        });
+        // Edge from nexthop to the prefix's router
+        if (r.next_hop !== r.router_id && nodeIds.has(r.router_id)) {
+          const eKey = r.next_hop + '-' + r.router_id;
+          const eRev = r.router_id + '-' + r.next_hop;
+          if (!edgeSet.has(eKey) && !edgeSet.has(eRev)) {
+            edgeSet.add(eKey);
+            visEdges.push({
+              from: r.next_hop,
+              to: r.router_id,
+              label: 'via',
+              dashes: true,
+              color: { color: 'rgba(100,100,100,0.25)', highlight: '#888', hover: '#888' },
+              font: { color: '#555', size: 10, strokeWidth: 0 },
+              width: 1,
+              smooth: { type: 'continuous' },
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // Render with vis.js
+  const container = document.getElementById('topology-canvas');
+  const data = { nodes: visNodes, edges: visEdges };
+
+  const options = {
+    physics: {
+      enabled: true,
+      barnesHut: {
+        gravitationalConstant: -3000,
+        centralGravity: 0.3,
+        springLength: 150,
+        springConstant: 0.04,
+        damping: 0.09,
+      },
+      stabilization: { iterations: 150 },
+    },
+    interaction: {
+      hover: true,
+      tooltipDelay: 150,
+      navigationButtons: true,
+      keyboard: true,
+    },
+    nodes: {
+      shadow: { enabled: true, color: 'rgba(0,0,0,0.3)', size: 8 },
+    },
+    edges: {
+      shadow: { enabled: false },
+    },
+  };
+
+  if (topoNetwork) {
+    topoNetwork.setData(data);
+  } else {
+    topoNetwork = new vis.Network(container, data, options);
   }
 }
 
