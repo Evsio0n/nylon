@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>nylon</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+  <nav class="container-fluid">
+    <ul>
+      <li><strong id="nav-title">nylon</strong></li>
+    </ul>
+    <ul>
+      <li><a href="#" data-page="dashboard" class="nav-link active">Dashboard</a></li>
+      <li><a href="#" data-page="nodes" class="nav-link">Nodes</a></li>
+      <li><a href="#" data-page="routes" class="nav-link">Routes</a></li>
+      <li><a href="#" data-page="neighbours" class="nav-link">Neighbours</a></li>
+      <li><a href="#" data-page="prefixes" class="nav-link">Prefixes</a></li>
+      <li><a href="#" data-page="forward" class="nav-link">Forward</a></li>
+      <li><a href="#" data-page="log" class="nav-link">Live Log</a></li>
+    </ul>
+  </nav>
+
+  <main class="container-fluid">
+    <!-- Dashboard -->
+    <section id="page-dashboard" class="page">
+      <hgroup>
+        <h2>Dashboard</h2>
+        <p>Mesh network overview</p>
+      </hgroup>
+      <div class="grid">
+        <div>
+          <article class="stat-card">
+            <header>Node ID</header>
+            <h3 id="stat-node-id">—</h3>
+            <footer id="stat-role">—</footer>
+          </article>
+        </div>
+        <div>
+          <article class="stat-card">
+            <header>Routes</header>
+            <h3 id="stat-routes">—</h3>
+          </article>
+        </div>
+        <div>
+          <article class="stat-card">
+            <header>Neighbours</header>
+            <h3 id="stat-neighbours">—</h3>
+          </article>
+        </div>
+        <div>
+          <article class="stat-card">
+            <header>Prefixes</header>
+            <h3 id="stat-prefixes">—</h3>
+          </article>
+        </div>
+      </div>
+      <div class="grid">
+        <div>
+          <article>
+            <header>Nodes</header>
+            <table id="tbl-dashboard-nodes">
+              <thead><tr><th>ID</th><th>Role</th><th>Addresses</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </article>
+        </div>
+        <div>
+          <article>
+            <header>Actions</header>
+            <div class="grid">
+              <button id="btn-reload" class="contrast outline" data-tooltip="Reload configuration and restart">Reload Config</button>
+              <button id="btn-flush" class="secondary outline" data-tooltip="Send full route table update to all neighbours">Flush Routes</button>
+            </div>
+            <div id="action-result" role="alert" hidden></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Nodes -->
+    <section id="page-nodes" class="page" hidden>
+      <hgroup>
+        <h2>Nodes</h2>
+        <p>All mesh participants</p>
+      </hgroup>
+      <article>
+        <table id="tbl-nodes">
+          <thead><tr><th>ID</th><th>Role</th><th>Addresses</th><th>Public Key</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </article>
+    </section>
+
+    <!-- Routes -->
+    <section id="page-routes" class="page" hidden>
+      <hgroup>
+        <h2>Routes</h2>
+        <p>Babel routing table</p>
+      </hgroup>
+      <article>
+        <table id="tbl-routes">
+          <thead><tr><th>Prefix</th><th>Next Hop</th><th>Router ID</th><th>SeqNo</th><th>Metric</th><th>Expires</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </article>
+    </section>
+
+    <!-- Neighbours -->
+    <section id="page-neighbours" class="page" hidden>
+      <hgroup>
+        <h2>Neighbours</h2>
+        <p>Direct peer connections</p>
+      </hgroup>
+      <div id="neighbour-cards"></div>
+    </section>
+
+    <!-- Prefixes -->
+    <section id="page-prefixes" class="page" hidden>
+      <hgroup>
+        <h2>Prefixes</h2>
+        <p>Advertised network prefixes</p>
+      </hgroup>
+      <article>
+        <table id="tbl-prefixes">
+          <thead><tr><th>Prefix</th><th>Router ID</th><th>Metric</th><th>Type</th><th>Expires</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </article>
+    </section>
+
+    <!-- Forward -->
+    <section id="page-forward" class="page" hidden>
+      <hgroup>
+        <h2>Forwarding Table</h2>
+        <p>Kernel forwarding entries</p>
+      </hgroup>
+      <article>
+        <table id="tbl-forward">
+          <thead><tr><th>Prefix</th><th>Next Hop</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </article>
+    </section>
+
+    <!-- Live Log -->
+    <section id="page-log" class="page" hidden>
+      <hgroup>
+        <h2>Live Log</h2>
+        <p>Real-time trace events via WebSocket</p>
+      </hgroup>
+      <article>
+        <div class="log-toolbar">
+          <button id="btn-log-connect" class="secondary outline">Connect</button>
+          <button id="btn-log-clear" class="contrast outline">Clear</button>
+          <span id="ws-status" class="ws-status disconnected">disconnected</span>
+        </div>
+        <div id="log-output" class="log-output"></div>
+      </article>
+    </section>
+  </main>
+
+  <script src="/ui/app.js"></script>
+</body>
+</html>

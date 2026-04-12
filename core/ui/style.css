@@ -1,0 +1,209 @@
+/* nylon Web UI styles */
+
+:root {
+  --nylon-accent: #e5a00d;
+  --nylon-bg-card: #18191a;
+  --log-bg: #111213;
+  --log-text: #c9d1d9;
+}
+
+[data-theme="dark"] {
+  --nylon-accent: #e5a00d;
+}
+
+/* Navigation */
+nav .nav-link {
+  text-decoration: none;
+  color: var(--pico-muted-color);
+  font-size: 0.9rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--pico-border-radius);
+  transition: color 0.2s, background 0.2s;
+}
+
+nav .nav-link:hover,
+nav .nav-link.active {
+  color: var(--nylon-accent);
+  background: rgba(229, 160, 13, 0.1);
+}
+
+/* Stat cards */
+.stat-card header {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--pico-muted-color);
+  margin-bottom: 0.25rem;
+}
+
+.stat-card h3 {
+  margin: 0;
+  font-size: 1.4rem;
+  color: var(--nylon-accent);
+  word-break: break-all;
+}
+
+.stat-card footer {
+  font-size: 0.85rem;
+  color: var(--pico-muted-color);
+}
+
+/* Neighbour cards */
+.neigh-card {
+  margin-bottom: 1rem;
+}
+
+.neigh-card summary {
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.neigh-card .neigh-meta {
+  display: flex;
+  gap: 1.5rem;
+  margin: 0.5rem 0;
+  flex-wrap: wrap;
+}
+
+.neigh-card .neigh-meta span {
+  font-size: 0.85rem;
+}
+
+.neigh-card .endpoint-list {
+  font-size: 0.85rem;
+}
+
+.neigh-card .endpoint-list td {
+  padding: 0.2rem 0.5rem;
+}
+
+/* Action result */
+#action-result {
+  margin-top: 0.75rem;
+  padding: 0.5rem 1rem;
+  border-radius: var(--pico-border-radius);
+  font-size: 0.9rem;
+}
+
+#action-result.success {
+  background: rgba(46, 160, 67, 0.15);
+  color: #3fb950;
+  border: 1px solid rgba(46, 160, 67, 0.3);
+}
+
+#action-result.error {
+  background: rgba(248, 81, 73, 0.15);
+  color: #f85149;
+  border: 1px solid rgba(248, 81, 73, 0.3);
+}
+
+/* Log output */
+.log-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.ws-status {
+  font-size: 0.8rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.ws-status.connected {
+  background: rgba(46, 160, 67, 0.2);
+  color: #3fb950;
+}
+
+.ws-status.disconnected {
+  background: rgba(248, 81, 73, 0.2);
+  color: #f85149;
+}
+
+.ws-status.connecting {
+  background: rgba(229, 160, 13, 0.2);
+  color: var(--nylon-accent);
+}
+
+.log-output {
+  background: var(--log-bg);
+  color: var(--log-text);
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  padding: 0.75rem;
+  border-radius: var(--pico-border-radius);
+  max-height: 70vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.log-output .log-line {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  padding: 0.15rem 0;
+}
+
+.log-output .log-ts {
+  color: var(--pico-muted-color);
+  margin-right: 0.5rem;
+}
+
+/* Tables */
+table tbody tr:hover {
+  background: rgba(229, 160, 13, 0.05);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  nav ul {
+    flex-wrap: wrap;
+  }
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Page transitions */
+.page {
+  animation: fadeIn 0.2s ease-in;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Badge */
+.badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+
+.badge.router {
+  background: rgba(229, 160, 13, 0.2);
+  color: var(--nylon-accent);
+}
+
+.badge.client {
+  background: rgba(110, 118, 129, 0.2);
+  color: #8b949e;
+}
+
+.badge.active {
+  background: rgba(46, 160, 67, 0.2);
+  color: #3fb950;
+}
+
+.badge.passive {
+  background: rgba(110, 118, 129, 0.2);
+  color: #8b949e;
+}

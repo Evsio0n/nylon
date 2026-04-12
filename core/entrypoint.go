@@ -244,6 +244,7 @@ func initModules(s *state.State) error {
 	var modules []state.NyModule
 	modules = append(modules, &NylonTrace{})
 	modules = append(modules, &NylonRouter{})
+	modules = append(modules, &ControlPlane{})
 	modules = append(modules, &Nylon{})
 
 	for _, module := range modules {
