@@ -207,8 +207,8 @@ func (cp *ControlPlane) Init(s *state.State) error {
 	}()
 
 	// Also listen on mesh interface IP so other nodes can query our API
-	meshListener := cp.listenMesh(s, handler)
-	cp.meshServer = meshListener
+	// Must be delayed because WG interface hasn't been created yet at Init time
+	go cp.listenMeshDelayed(s, handler)
 
 	return nil
 }
@@ -586,13 +586,12 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 
 // --- Mesh listener ---
 
-// listenMesh binds the control plane HTTP server on the node's first mesh prefix address
-// so other nylon nodes can query the API through the mesh tunnel.
-func (cp *ControlPlane) listenMesh(s *state.State, handler http.Handler) *http.Server {
-	// Find this node's mesh address from its prefix
+// listenMeshDelayed waits for the WireGuard interface to come up, then binds
+// the control plane on the node's mesh prefix address.
+func (cp *ControlPlane) listenMeshDelayed(s *state.State, handler http.Handler) {
 	node := s.Env.TryGetNode(s.Env.LocalCfg.Id)
 	if node == nil {
-		return nil
+		return
 	}
 
 	var meshAddr string
@@ -604,13 +603,22 @@ func (cp *ControlPlane) listenMesh(s *state.State, handler http.Handler) *http.S
 		}
 	}
 	if meshAddr == "" {
-		return nil
+		return
 	}
 
-	ln, err := net.Listen("tcp", meshAddr)
+	// Retry binding — WG interface may not exist yet
+	var ln net.Listener
+	var err error
+	for attempt := 0; attempt < 30; attempt++ {
+		ln, err = net.Listen("tcp", meshAddr)
+		if err == nil {
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
 	if err != nil {
-		s.Log.Warn("control plane: mesh listener failed to bind", "addr", meshAddr, "error", err)
-		return nil
+		s.Log.Warn("control plane: mesh listener gave up", "addr", meshAddr, "error", err)
+		return
 	}
 
 	srv := &http.Server{
@@ -619,15 +627,12 @@ func (cp *ControlPlane) listenMesh(s *state.State, handler http.Handler) *http.S
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       30 * time.Second,
 	}
+	cp.meshServer = srv
 
-	go func() {
-		s.Log.Info("control plane mesh listener started", "addr", meshAddr)
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			s.Log.Error("control plane mesh listener error", "error", err)
-		}
-	}()
-
-	return srv
+	s.Log.Info("control plane mesh listener started", "addr", meshAddr)
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		s.Log.Error("control plane mesh listener error", "error", err)
+	}
 }
 
 // --- Topology aggregation ---
