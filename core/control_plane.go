@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -30,10 +31,11 @@ const (
 // ControlPlane is a NyModule that exposes a REST API + WebSocket
 // for inspecting and managing nylon mesh state.
 type ControlPlane struct {
-	env      *state.Env
-	server   *http.Server
-	trace    *NylonTrace
-	wsClients wsClientSet
+	env        *state.Env
+	server     *http.Server
+	meshServer *http.Server
+	trace      *NylonTrace
+	wsClients  wsClientSet
 }
 
 // wsClientSet tracks active WebSocket connections for clean shutdown.
@@ -165,6 +167,9 @@ func (cp *ControlPlane) Init(s *state.State) error {
 	// Phase 2: WebSocket
 	mux.Handle(apiV1Prefix+"/ws", websocket.Handler(cp.handleWebSocket))
 
+	// Phase 3: Topology aggregation (queries neighbours over mesh)
+	mux.HandleFunc("GET "+apiV1Prefix+"/topology", cp.handleTopology)
+
 	// Phase 3: Embedded Web UI (SPA)
 	uiSub, err := fs.Sub(uiFS, "ui")
 	if err != nil {
@@ -178,17 +183,20 @@ func (cp *ControlPlane) Init(s *state.State) error {
 		})
 	}
 
-	cp.server = &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       30 * time.Second,
-	}
+	handler := mux
 
+	// Listen on localhost
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		s.Log.Warn("control plane failed to bind, skipping", "addr", addr, "error", err)
 		return nil // non-fatal: control plane is optional
+	}
+
+	cp.server = &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       30 * time.Second,
 	}
 
 	go func() {
@@ -197,6 +205,10 @@ func (cp *ControlPlane) Init(s *state.State) error {
 			s.Log.Error("control plane server error", "error", err)
 		}
 	}()
+
+	// Also listen on mesh interface IP so other nodes can query our API
+	meshListener := cp.listenMesh(s, handler)
+	cp.meshServer = meshListener
 
 	return nil
 }
@@ -570,4 +582,247 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 		"error": msg,
 		"code":  fmt.Sprintf("%d", code),
 	})
+}
+
+// --- Mesh listener ---
+
+// listenMesh binds the control plane HTTP server on the node's first mesh address
+// so other nylon nodes can query the API through the mesh tunnel.
+func (cp *ControlPlane) listenMesh(s *state.State, handler http.Handler) *http.Server {
+	// Find this node's mesh addresses
+	node := s.Env.TryGetNode(s.Env.LocalCfg.Id)
+	if node == nil {
+		return nil
+	}
+
+	var meshAddr string
+	for _, addr := range node.Addresses {
+		meshAddr = netip.AddrPortFrom(addr, defaultControlPlanePort).String()
+		break
+	}
+	if meshAddr == "" {
+		return nil
+	}
+
+	ln, err := net.Listen("tcp", meshAddr)
+	if err != nil {
+		s.Log.Warn("control plane: mesh listener failed to bind", "addr", meshAddr, "error", err)
+		return nil
+	}
+
+	srv := &http.Server{
+		Addr:              meshAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
+
+	go func() {
+		s.Log.Info("control plane mesh listener started", "addr", meshAddr)
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			s.Log.Error("control plane mesh listener error", "error", err)
+		}
+	}()
+
+	return srv
+}
+
+// --- Topology aggregation ---
+
+const (
+	defaultControlPlanePort = 58175
+	topologyQueryTimeout   = 5 * time.Second
+)
+
+// neighbourTopology is the JSON shape we fetch from each neighbour's /api/v1/status + /api/v1/neighbours.
+type neighbourTopology struct {
+	NodeID     string `json:"node_id"`
+	IsRouter   bool   `json:"is_router"`
+	Neighbours []struct {
+		ID         string `json:"id"`
+		BestMetric int    `json:"best_metric"`
+	} `json:"neighbours"`
+}
+
+// handleTopology aggregates topology from the entire mesh by querying each reachable node's API.
+// Algorithm:
+//  1. Start with our own neighbours (from dispatch)
+//  2. For each known node, query its /api/v1/status + /api/v1/neighbours via mesh network
+//  3. Build a complete graph of all nodes and edges
+func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), topologyQueryTimeout)
+	defer cancel()
+
+	type topoNode struct {
+		ID       string `json:"id"`
+		IsRouter bool   `json:"is_router"`
+		IsSelf   bool   `json:"is_self"`
+	}
+	type topoEdge struct {
+		From   string `json:"from"`
+		To     string `json:"to"`
+		Metric int    `json:"metric"`
+	}
+
+	visited := make(map[string]bool)
+	var allEdges []topoEdge
+	nodeMap := make(map[string]topoNode)
+
+	myID := string(cp.env.LocalCfg.Id)
+
+	// Add self
+	nodeMap[myID] = topoNode{ID: myID, IsRouter: cp.env.IsRouter(state.NodeId(myID)), IsSelf: true}
+
+	// Get our own neighbours via dispatch
+	type ownNeigh struct {
+		Id         string
+		BestMetric int
+	}
+	neighResult := make(chan []ownNeigh, 1)
+	cp.env.Dispatch(func(s *state.State) error {
+		var list []ownNeigh
+		for _, n := range s.Neighbours {
+			on := ownNeigh{Id: string(n.Id)}
+			best := n.BestEndpoint()
+			if best != nil {
+				on.BestMetric = int(best.Metric())
+			}
+			list = append(list, on)
+		}
+		neighResult <- list
+		return nil
+	})
+
+	var ownNeighs []ownNeigh
+	select {
+	case ownNeighs = <-neighResult:
+	case <-time.After(3 * time.Second):
+		writeError(w, http.StatusServiceUnavailable, "dispatch timeout")
+		return
+	}
+
+	for _, nb := range ownNeighs {
+		edgeKey := myID + "-" + nb.Id
+		if !visited[edgeKey] {
+			visited[edgeKey] = true
+			allEdges = append(allEdges, topoEdge{From: myID, To: nb.Id, Metric: nb.BestMetric})
+		}
+		nodeMap[nb.Id] = topoNode{ID: nb.Id, IsRouter: cp.env.IsRouter(state.NodeId(nb.Id))}
+	}
+
+	// Query each known node's API via mesh network for their neighbour view
+	type pendingNode struct {
+		id   string
+		addr string
+	}
+
+	var queue []pendingNode
+	for _, nb := range ownNeighs {
+		addr := cp.resolveNodeAddr(nb.Id)
+		if addr != "" {
+			queue = append(queue, pendingNode{id: nb.Id, addr: addr})
+		}
+	}
+
+	queried := make(map[string]bool)
+	queried[myID] = true
+
+	for len(queue) > 0 {
+		item := queue[0]
+		queue = queue[1:]
+
+		if queried[item.id] {
+			continue
+		}
+		queried[item.id] = true
+
+		topo := cp.queryNodeTopology(ctx, item.addr)
+		if topo == nil {
+			continue
+		}
+
+		// Update node info from remote
+		nodeMap[item.id] = topoNode{ID: topo.NodeID, IsRouter: topo.IsRouter}
+
+		for _, nb := range topo.Neighbours {
+			edgeA := item.id + "-" + nb.ID
+			edgeB := nb.ID + "-" + item.id
+			if !visited[edgeA] && !visited[edgeB] {
+				visited[edgeA] = true
+				allEdges = append(allEdges, topoEdge{From: item.id, To: nb.ID, Metric: nb.BestMetric})
+			}
+
+			if _, exists := nodeMap[nb.ID]; !exists {
+				nodeMap[nb.ID] = topoNode{ID: nb.ID, IsRouter: cp.env.IsRouter(state.NodeId(nb.ID))}
+			}
+
+			if !queried[nb.ID] {
+				addr := cp.resolveNodeAddr(nb.ID)
+				if addr != "" {
+					queue = append(queue, pendingNode{id: nb.ID, addr: addr})
+				}
+			}
+		}
+	}
+
+	// Build result
+	var allNodes []topoNode
+	for _, n := range nodeMap {
+		allNodes = append(allNodes, n)
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"nodes": allNodes,
+		"edges": allEdges,
+	})
+}
+
+// queryNodeTopology fetches /api/v1/status + /api/v1/neighbours from a remote node via mesh.
+func (cp *ControlPlane) queryNodeTopology(ctx context.Context, addr string) *neighbourTopology {
+	client := &http.Client{Timeout: topologyQueryTimeout}
+
+	// Fetch status
+	statusResp, err := client.Get("http://" + addr + apiV1Prefix + "/status")
+	if err != nil {
+		return nil
+	}
+	defer statusResp.Body.Close()
+
+	var status struct {
+		NodeID   string `json:"node_id"`
+		IsRouter bool   `json:"is_router"`
+	}
+	if err := json.NewDecoder(statusResp.Body).Decode(&status); err != nil {
+		return nil
+	}
+
+	// Fetch neighbours
+	neighResp, err := client.Get("http://" + addr + apiV1Prefix + "/neighbours")
+	if err != nil {
+		return nil
+	}
+	defer neighResp.Body.Close()
+
+	var neighs []struct {
+		ID         string `json:"id"`
+		BestMetric int    `json:"best_metric"`
+	}
+	if err := json.NewDecoder(neighResp.Body).Decode(&neighs); err != nil {
+		return nil
+	}
+
+	return &neighbourTopology{
+		NodeID:     status.NodeID,
+		IsRouter:   status.IsRouter,
+		Neighbours: neighs,
+	}
+}
+
+// resolveNodeAddr returns the mesh IP:port for a given node ID.
+func (cp *ControlPlane) resolveNodeAddr(nodeId string) string {
+	node := cp.env.TryGetNode(state.NodeId(nodeId))
+	if node == nil || len(node.Addresses) == 0 {
+		return ""
+	}
+	return netip.AddrPortFrom(node.Addresses[0], defaultControlPlanePort).String()
 }
