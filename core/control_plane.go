@@ -586,19 +586,22 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 
 // --- Mesh listener ---
 
-// listenMesh binds the control plane HTTP server on the node's first mesh address
+// listenMesh binds the control plane HTTP server on the node's first mesh prefix address
 // so other nylon nodes can query the API through the mesh tunnel.
 func (cp *ControlPlane) listenMesh(s *state.State, handler http.Handler) *http.Server {
-	// Find this node's mesh addresses
+	// Find this node's mesh address from its prefix
 	node := s.Env.TryGetNode(s.Env.LocalCfg.Id)
 	if node == nil {
 		return nil
 	}
 
 	var meshAddr string
-	for _, addr := range node.Addresses {
-		meshAddr = netip.AddrPortFrom(addr, defaultControlPlanePort).String()
-		break
+	for _, pfx := range node.Prefixes {
+		addr := pfx.GetPrefix().Addr()
+		if addr.IsValid() {
+			meshAddr = netip.AddrPortFrom(addr, defaultControlPlanePort).String()
+			break
+		}
 	}
 	if meshAddr == "" {
 		return nil
@@ -821,8 +824,14 @@ func (cp *ControlPlane) queryNodeTopology(ctx context.Context, addr string) *nei
 // resolveNodeAddr returns the mesh IP:port for a given node ID.
 func (cp *ControlPlane) resolveNodeAddr(nodeId string) string {
 	node := cp.env.TryGetNode(state.NodeId(nodeId))
-	if node == nil || len(node.Addresses) == 0 {
+	if node == nil {
 		return ""
 	}
-	return netip.AddrPortFrom(node.Addresses[0], defaultControlPlanePort).String()
+	for _, pfx := range node.Prefixes {
+		addr := pfx.GetPrefix().Addr()
+		if addr.IsValid() {
+			return netip.AddrPortFrom(addr, defaultControlPlanePort).String()
+		}
+	}
+	return ""
 }
