@@ -710,6 +710,10 @@ func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, nb := range ownNeighs {
+		if nb.BestMetric >= 0xFFFFFFFF { // unreachable (Babel infinity)
+			nodeMap[nb.Id] = topoNode{ID: nb.Id, IsRouter: cp.env.IsRouter(state.NodeId(nb.Id))}
+			continue
+		}
 		edgeKey := myID + "-" + nb.Id
 		if !visited[edgeKey] {
 			visited[edgeKey] = true
@@ -753,6 +757,12 @@ func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
 		nodeMap[item.id] = topoNode{ID: topo.NodeID, IsRouter: topo.IsRouter}
 
 		for _, nb := range topo.Neighbours {
+			if nb.BestMetric >= 0xFFFFFFFF { // unreachable
+				if _, exists := nodeMap[nb.ID]; !exists {
+					nodeMap[nb.ID] = topoNode{ID: nb.ID, IsRouter: cp.env.IsRouter(state.NodeId(nb.ID))}
+				}
+				continue
+			}
 			edgeA := item.id + "-" + nb.ID
 			edgeB := nb.ID + "-" + item.id
 			if !visited[edgeA] && !visited[edgeB] {
