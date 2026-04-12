@@ -104,13 +104,32 @@ async function loadDashboard() {
 let topoNetwork = null;
 
 async function loadTopology() {
+  const btn = document.getElementById('btn-topo-refresh');
+  const status = document.getElementById('topo-status');
+  btn.disabled = true;
+  btn.setAttribute('aria-busy', 'true');
+  status.textContent = 'loading…';
+
   try {
     const topo = await apiFetch('/topology');
+    const canvas = document.getElementById('topology-canvas');
+    canvas.classList.remove('topo-fade-in');
+    void canvas.offsetWidth; // force reflow
+    canvas.classList.add('topo-fade-in');
     renderTopology(topo);
+    const nodeCount = (topo.nodes || []).length;
+    const edgeCount = (topo.edges || []).length;
+    status.textContent = nodeCount + ' nodes, ' + edgeCount + ' links';
   } catch (err) {
+    status.textContent = '✗ ' + err.message;
     console.error('Failed to load topology:', err);
   }
+
+  btn.disabled = false;
+  btn.removeAttribute('aria-busy');
 }
+
+document.getElementById('btn-topo-refresh').addEventListener('click', loadTopology);
 
 function renderTopology(topo) {
   const nodes = (topo.nodes || []);
@@ -431,7 +450,7 @@ let refreshTimer = null;
 function startAutoRefresh() {
   stopAutoRefresh();
   refreshTimer = setInterval(() => {
-    if (currentPage !== 'log') {
+    if (currentPage !== 'log' && currentPage !== 'topology') {
       loadPage(currentPage);
     }
   }, 10000); // every 10s
