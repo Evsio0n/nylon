@@ -20,9 +20,11 @@ func InitUAPI(e *state.Env, itfName string) (net.Listener, error) {
 	return uapi, nil
 }
 
-func InitInterface(logger *slog.Logger, ifName string) error {
+func InitInterface(logger *slog.Logger, ifName string, fwmark uint32) error {
 	return nil
 }
+
+func CleanupInterface(logger *slog.Logger, ifName string, fwmark uint32) {}
 
 func ConfigureAlias(logger *slog.Logger, ifName string, addr netip.Addr) error {
 	if addr.Is4() {
@@ -53,7 +55,7 @@ func PrefixToMaskString(p netip.Prefix) string {
 	return net.IP(mask).String()
 }
 
-func ConfigureRoute(logger *slog.Logger, dev tun.Device, itfName string, route netip.Prefix) error {
+func ConfigureRoute(logger *slog.Logger, dev tun.Device, itfName string, route netip.Prefix, fwmark uint32) error {
 	if route.Addr().Is6() {
 		return Exec(logger, "/sbin/route", "-n", "add", "-inet6", route.String(), "-interface", itfName)
 	} else {
@@ -63,7 +65,7 @@ func ConfigureRoute(logger *slog.Logger, dev tun.Device, itfName string, route n
 	}
 }
 
-func RemoveRoute(logger *slog.Logger, dev tun.Device, itfName string, route netip.Prefix) error {
+func RemoveRoute(logger *slog.Logger, dev tun.Device, itfName string, route netip.Prefix, fwmark uint32) error {
 	if route.Addr().Is6() {
 		return Exec(logger, "/sbin/route", "-n", "delete", "-inet6", route.String(), "-interface", itfName)
 	} else {

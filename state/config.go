@@ -58,6 +58,7 @@ type LocalCfg struct {
 	DnsResolvers     []string              `yaml:"dns_resolvers,omitempty"`      // dns resolvers used by nylon, currently only for config repo
 	InterfaceName    string                `yaml:"interface_name,omitempty"`     // the name of the nylon interface
 	LogPath          string                `yaml:"log_path,omitempty"`           // if not empty, nylon will write to this file
+	Fwmark           uint32                `yaml:"fwmark,omitempty"`             // firewall mark for policy routing on Linux (0 = use port value); prevents routing loops when running alongside other VPNs (e.g. Tailscale)
 	UnexcludeIPs     []netip.Prefix        `yaml:"unexclude_ips,omitempty"`      // split tunnel, subtracts from centrally excluded ip ranges
 	ExcludeIPs       []netip.Prefix        `yaml:"exclude_ips,omitempty"`        // split tunnel, adds to the centrally excluded ip ranges
 	PreUp            []string              `yaml:"pre_up,omitempty"`             // a list of commands executed in order before the nylon interface is brought up

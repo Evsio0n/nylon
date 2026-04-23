@@ -19,6 +19,7 @@ type Nylon struct {
 	wgUapi              net.Listener
 	env                 *state.Env
 	itfName             string
+	fwmark              uint32
 	prevInstalledRoutes []netip.Prefix
 }
 

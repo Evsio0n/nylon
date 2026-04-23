@@ -25,15 +25,17 @@ func InitUAPI(e *state.Env, itfName string) (net.Listener, error) {
 	return uapi, nil
 }
 
-func InitInterface(logger *slog.Logger, ifName string) error {
+func InitInterface(logger *slog.Logger, ifName string, fwmark uint32) error {
 	return nil
 }
+
+func CleanupInterface(logger *slog.Logger, ifName string, fwmark uint32) {}
 
 func ConfigureAlias(logger *slog.Logger, ifName string, addr netip.Addr) error {
 	return Exec(logger, "netsh", "interface", "ip", "add", "address", ifName, addr.String())
 }
 
-func ConfigureRoute(logger *slog.Logger, dev tun.Device, itfName string, route netip.Prefix) error {
+func ConfigureRoute(logger *slog.Logger, dev tun.Device, itfName string, route netip.Prefix, fwmark uint32) error {
 	ifId := wintypes.LUID((dev.(*tun.NativeTun)).LUID())
 	itf, err := ifId.Interface()
 	if err != nil {
@@ -51,7 +53,7 @@ func ConfigureRoute(logger *slog.Logger, dev tun.Device, itfName string, route n
 	}
 }
 
-func RemoveRoute(logger *slog.Logger, dev tun.Device, itfName string, route netip.Prefix) error {
+func RemoveRoute(logger *slog.Logger, dev tun.Device, itfName string, route netip.Prefix, fwmark uint32) error {
 	ifId := wintypes.LUID((dev.(*tun.NativeTun)).LUID())
 	itf, err := ifId.Interface()
 	if err != nil {

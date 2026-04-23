@@ -27,6 +27,12 @@ func (n *Nylon) initWireGuard(s *state.State) error {
 	n.Tun = tdev
 	n.itfName = itfName
 
+	fwmark := s.Fwmark
+	if fwmark == 0 {
+		fwmark = uint32(s.Port)
+	}
+	n.fwmark = fwmark
+
 	n.InstallTC(s)
 	s.Log.Info("installed nylon traffic control filter for polysock")
 
@@ -39,9 +45,11 @@ func (n *Nylon) initWireGuard(s *state.State) error {
 		fmt.Sprintf(
 			`private_key=%s
 listen_port=%d
+fwmark=%d
 `,
 			hex.EncodeToString(s.Key[:]),
 			s.Port,
+			fwmark,
 		),
 	)
 	if err != nil {
@@ -75,7 +83,7 @@ listen_port=%d
 			}
 			endpoint, err := n.Device.Bind().ParseEndpoint(ap.String())
 			if err != nil {
-				return err
+				return fmt.Errorf("peer %s: invalid endpoint %q: %w", peer, ap.String(), err)
 			}
 			endpoints = append(endpoints, endpoint)
 		}
@@ -102,7 +110,7 @@ listen_port=%d
 			}
 		}
 
-		err = InitInterface(s.Log, itfName)
+		err = InitInterface(s.Log, itfName, fwmark)
 		if err != nil {
 			return err
 		}
@@ -125,11 +133,12 @@ listen_port=%d
 func (n *Nylon) cleanupWireGuard(s *state.State) error {
 	// remove routes
 	for _, route := range n.prevInstalledRoutes {
-		err := RemoveRoute(s.Log, n.Tun, n.itfName, route)
+		err := RemoveRoute(s.Log, n.Tun, n.itfName, route, n.fwmark)
 		if err != nil {
 			s.Log.Error("failed to remove route", "err", err)
 		}
 	}
+	CleanupInterface(s.Log, n.itfName, n.fwmark)
 	// run pre-down commands
 	for _, cmd := range s.PreDown {
 		err := ExecSplit(s.Log, cmd)
@@ -189,7 +198,7 @@ func UpdateWireGuard(s *state.State) error {
 			}) {
 				endpoint, err := n.Device.Bind().ParseEndpoint(ap.String())
 				if err != nil {
-					return err
+					return fmt.Errorf("peer %s: invalid endpoint %q: %w", peer, ap.String(), err)
 				}
 				eps = append(eps, endpoint)
 			}
@@ -208,7 +217,7 @@ func UpdateWireGuard(s *state.State) error {
 			if !slices.Contains(newEntries, oldEntry) {
 				// uninstall route
 				s.Log.Debug("removing old route", "prefix", oldEntry.String())
-				err := RemoveRoute(s.Log, n.Tun, n.itfName, oldEntry)
+				err := RemoveRoute(s.Log, n.Tun, n.itfName, oldEntry, n.fwmark)
 				if err != nil {
 					s.Log.Error("failed to remove route", "err", err)
 				}
@@ -218,7 +227,7 @@ func UpdateWireGuard(s *state.State) error {
 			if !slices.Contains(oldEntries, newEntry) {
 				// install route
 				s.Log.Debug("installing new route", "prefix", newEntry.String())
-				err := ConfigureRoute(s.Log, n.Tun, n.itfName, newEntry)
+				err := ConfigureRoute(s.Log, n.Tun, n.itfName, newEntry, n.fwmark)
 				if err != nil {
 					s.Log.Error("failed to configure route", "err", err)
 				}
