@@ -648,7 +648,7 @@ type neighbourTopology struct {
 	IsRouter   bool   `json:"is_router"`
 	Neighbours []struct {
 		ID         string `json:"id"`
-		BestMetric int    `json:"best_metric"`
+		BestMetric uint32 `json:"best_metric"`
 	} `json:"neighbours"`
 }
 
@@ -669,7 +669,7 @@ func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
 	type topoEdge struct {
 		From   string `json:"from"`
 		To     string `json:"to"`
-		Metric int    `json:"metric"`
+		Metric uint32 `json:"metric"`
 	}
 
 	visited := make(map[string]bool)
@@ -684,7 +684,7 @@ func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
 	// Get our own neighbours via dispatch
 	type ownNeigh struct {
 		Id         string
-		BestMetric int
+		BestMetric uint32
 	}
 	neighResult := make(chan []ownNeigh, 1)
 	cp.env.Dispatch(func(s *state.State) error {
@@ -693,7 +693,7 @@ func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
 			on := ownNeigh{Id: string(n.Id)}
 			best := n.BestEndpoint()
 			if best != nil {
-				on.BestMetric = int(best.Metric())
+				on.BestMetric = best.Metric()
 			}
 			list = append(list, on)
 		}
@@ -710,7 +710,7 @@ func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, nb := range ownNeighs {
-		if nb.BestMetric >= 0xFFFFFFFF { // unreachable (Babel infinity)
+		if nb.BestMetric >= state.INF { // unreachable (Babel infinity)
 			nodeMap[nb.Id] = topoNode{ID: nb.Id, IsRouter: cp.env.IsRouter(state.NodeId(nb.Id))}
 			continue
 		}
@@ -757,7 +757,7 @@ func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
 		nodeMap[item.id] = topoNode{ID: topo.NodeID, IsRouter: topo.IsRouter}
 
 		for _, nb := range topo.Neighbours {
-			if nb.BestMetric >= 0xFFFFFFFF { // unreachable
+			if nb.BestMetric >= state.INF { // unreachable
 				if _, exists := nodeMap[nb.ID]; !exists {
 					nodeMap[nb.ID] = topoNode{ID: nb.ID, IsRouter: cp.env.IsRouter(state.NodeId(nb.ID))}
 				}
@@ -823,7 +823,7 @@ func (cp *ControlPlane) queryNodeTopology(ctx context.Context, addr string) *nei
 
 	var neighs []struct {
 		ID         string `json:"id"`
-		BestMetric int    `json:"best_metric"`
+		BestMetric uint32 `json:"best_metric"`
 	}
 	if err := json.NewDecoder(neighResp.Body).Decode(&neighs); err != nil {
 		return nil
