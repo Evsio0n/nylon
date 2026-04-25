@@ -48,6 +48,55 @@ func TestDispatch(t *testing.T) {
 	}
 }
 
+func TestDispatchWaitsForQueueSpace(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	dispatchChan := make(chan func(*State) error, 1)
+	env := &Env{
+		DispatchChannel: dispatchChan,
+		Context:         ctx,
+		Cancel: func(err error) {
+			cancel()
+		},
+	}
+
+	dispatchChan <- func(s *State) error { return nil }
+
+	dispatched := make(chan struct{})
+	go func() {
+		env.Dispatch(func(s *State) error {
+			close(dispatched)
+			return nil
+		})
+	}()
+
+	select {
+	case <-dispatched:
+		t.Fatal("Dispatch ran before queue space was available")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	<-dispatchChan
+
+	var f func(*State) error
+	select {
+	case f = <-dispatchChan:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Dispatch did not enqueue after queue space became available")
+	}
+
+	if err := f(&State{Env: env}); err != nil {
+		t.Fatalf("Dispatch error: %v", err)
+	}
+
+	select {
+	case <-dispatched:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Dispatched function was not executed")
+	}
+}
+
 func TestScheduleTask(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

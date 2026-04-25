@@ -2,6 +2,7 @@ package state
 
 import (
 	"fmt"
+	"log/slog"
 	"reflect"
 	"runtime"
 	"time"
@@ -14,15 +15,33 @@ func (e *Env) Dispatch(fun func(*State) error) {
 			e.Cancel(fmt.Errorf("dispatch panic: %v", r))
 		}
 	}()
-	for {
-		select {
-		case e.DispatchChannel <- fun:
-			return
-		default:
-			e.Log.Error("dispatch channel is full, discarded function", "fun", runtime.FuncForPC(reflect.ValueOf(fun).Pointer()).Name(), "len", len(e.DispatchChannel))
-			return
-		}
+	if e.DispatchChannel == nil {
+		e.log().Error("dispatch channel is nil, discarded function", "fun", funcName(fun))
+		return
 	}
+	var done <-chan struct{}
+	if e.Context != nil {
+		done = e.Context.Done()
+	}
+	select {
+	case e.DispatchChannel <- fun:
+	case <-done:
+		e.log().Debug("dispatch skipped after shutdown", "fun", funcName(fun), "err", e.Context.Err())
+	}
+}
+
+func (e *Env) log() *slog.Logger {
+	if e.Log != nil {
+		return e.Log
+	}
+	return slog.Default()
+}
+
+func funcName(fun func(*State) error) string {
+	if fun == nil {
+		return "<nil>"
+	}
+	return runtime.FuncForPC(reflect.ValueOf(fun).Pointer()).Name()
 }
 
 func (e *Env) ScheduleTask(fun func(*State) error, delay time.Duration) {
