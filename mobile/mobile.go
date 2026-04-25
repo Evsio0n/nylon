@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,11 @@ type NylonMobile struct {
 	state   *state.State
 }
 
+type trafficStats struct {
+	TxBytes uint64 `json:"tx_bytes"`
+	RxBytes uint64 `json:"rx_bytes"`
+}
+
 // NewNylonMobile creates a new NylonMobile instance.
 func NewNylonMobile() *NylonMobile {
 	return &NylonMobile{}
@@ -55,7 +61,7 @@ func parseLogLevel(value string) slog.Level {
 // centralYAML and nodeYAML are raw YAML config strings matching the
 // state.CentralCfg and state.LocalCfg formats.
 // tunFd is the file descriptor from NEPacketTunnelProvider (0 to create TUN internally).
-// Returns when initialisation completes or on init error (with a 10s timeout).
+// Returns when initialisation completes or on init error.
 func (n *NylonMobile) Start(centralYAML, nodeYAML string, tunFd int32) error {
 	n.mu.Lock()
 	if n.running {
@@ -153,17 +159,29 @@ func (n *NylonMobile) Start(centralYAML, nodeYAML string, tunFd int32) error {
 		}
 	}()
 
-	// Wait for either init error or timeout (engine started successfully)
-	select {
-	case err := <-initResult:
-		// Init failed
-		return err
-	case <-time.After(10 * time.Second):
-		// Assume init succeeded, engine is now running in MainLoop
-		n.mu.Lock()
-		n.state = st
-		n.mu.Unlock()
-		return nil
+	// Wait for either init error, the main loop start signal, or timeout.
+	// core.Start blocks while the engine is running, so a fixed timeout here
+	// would unnecessarily slow down iOS VPN connection establishment.
+	timeout := time.After(10 * time.Second)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-initResult:
+			return err
+		case <-ticker.C:
+			if st != nil && st.Env != nil && st.Started.Load() {
+				n.mu.Lock()
+				n.state = st
+				n.mu.Unlock()
+				return nil
+			}
+		case <-timeout:
+			n.mu.Lock()
+			n.state = st
+			n.mu.Unlock()
+			return nil
+		}
 	}
 }
 
@@ -250,4 +268,61 @@ func (n *NylonMobile) GetSelfAddresses() string {
 
 	data, _ := json.Marshal(addrs)
 	return string(data)
+}
+
+// GetTrafficStats returns aggregate WireGuard peer transfer counters.
+func (n *NylonMobile) GetTrafficStats() string {
+	n.mu.Lock()
+	st := n.state
+	n.mu.Unlock()
+
+	if st == nil || st.Env == nil {
+		data, _ := json.Marshal(trafficStats{})
+		return string(data)
+	}
+
+	result := make(chan trafficStats, 1)
+	st.Env.Dispatch(func(s *state.State) error {
+		nylon := core.Get[*core.Nylon](s)
+		if nylon == nil || nylon.Device == nil {
+			result <- trafficStats{}
+			return nil
+		}
+
+		uapi, err := nylon.Device.IpcGet()
+		if err != nil {
+			result <- trafficStats{}
+			return nil
+		}
+
+		var stats trafficStats
+		for _, line := range strings.Split(uapi, "\n") {
+			key, value, ok := strings.Cut(line, "=")
+			if !ok {
+				continue
+			}
+			bytes, err := strconv.ParseUint(value, 10, 64)
+			if err != nil {
+				continue
+			}
+			switch key {
+			case "tx_bytes":
+				stats.TxBytes += bytes
+			case "rx_bytes":
+				stats.RxBytes += bytes
+			}
+		}
+
+		result <- stats
+		return nil
+	})
+
+	select {
+	case stats := <-result:
+		data, _ := json.Marshal(stats)
+		return string(data)
+	case <-time.After(5 * time.Second):
+		data, _ := json.Marshal(trafficStats{})
+		return string(data)
+	}
 }
