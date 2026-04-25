@@ -163,6 +163,10 @@ func Bootstrap(centralPath, nodePath, logPath string, verbose bool, cmd *cobra.C
 }
 
 func Start(ccfg state.CentralCfg, ncfg state.LocalCfg, logLevel slog.Level, configPath string, aux map[string]any, initState **state.State) (bool, error) {
+	if ncfg.ExitNode != "" && !ccfg.IsRouter(ncfg.ExitNode) {
+		return false, fmt.Errorf("exit_node %s must be a router in central config", ncfg.ExitNode)
+	}
+
 	ctx, cancel := context.WithCancelCause(context.Background())
 
 	dispatch := make(chan func(env *state.State) error, 128)

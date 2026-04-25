@@ -1,7 +1,9 @@
 package core
 
 import (
+	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 
 	"github.com/encodeous/nylon/polyamide/conn"
@@ -12,7 +14,9 @@ import (
 )
 
 const (
-	NyProtoId = 8
+	NyProtoId          = 8
+	NyExitProtoId      = 9
+	exitPacketHopLimit = 64
 )
 
 // polyamide traffic control for nylon
@@ -39,6 +43,38 @@ func (n *Nylon) InstallTC(s *state.State) {
 				}
 			}
 			return device.TcPass, nil
+		})
+	}
+
+	if s.LocalCfg.ExitNode != "" {
+		n.Device.InstallFilter(func(dev *device.Device, packet *device.TCElement) (device.TCAction, error) {
+			if packet.Incoming() || !packet.Validate() || (packet.GetIPVersion() != 4 && packet.GetIPVersion() != 6) {
+				return device.TcPass, nil
+			}
+			entry, ok := r.ForwardTable.Lookup(packet.GetDst())
+			if ok {
+				return device.TcPass, nil // overlay routes keep normal routing semantics.
+			}
+			entry, ok = r.ForwardEntryToNode(s.LocalCfg.ExitNode)
+			if !ok || entry.Peer == nil {
+				if state.DBG_trace_tc {
+					t.Submit(fmt.Sprintf("ExitDrop: %v -> %v, exit %s, reason no_route\n", packet.GetSrc(), packet.GetDst(), s.LocalCfg.ExitNode))
+				}
+				return device.TcDrop, nil
+			}
+			src, dst := packet.GetSrc(), packet.GetDst()
+			if err := n.wrapExitPacket(packet, s.LocalCfg.ExitNode, s.Id); err != nil {
+				if state.DBG_trace_tc {
+					t.Submit(fmt.Sprintf("ExitDrop: %v -> %v, exit %s, reason %v\n", src, dst, s.LocalCfg.ExitNode, err))
+				}
+				return device.TcDrop, nil
+			}
+			packet.ToPeer = entry.Peer
+			packet.Priority = device.TcMediumPriority
+			if state.DBG_trace_tc {
+				t.Submit(fmt.Sprintf("ExitEncap: %v -> %v, exit %s via %s\n", src, dst, s.LocalCfg.ExitNode, entry.Nh))
+			}
+			return device.TcForward, nil
 		})
 	}
 
@@ -123,10 +159,197 @@ func (n *Nylon) InstallTC(s *state.State) {
 		}
 		return device.TcPass, nil
 	})
+
+	// handle explicit exit packets after installing all normal IP filters; TC
+	// runs filters in reverse installation order, so this executes first.
+	n.Device.InstallFilter(func(dev *device.Device, packet *device.TCElement) (device.TCAction, error) {
+		if !packet.Incoming() || packet.GetIPVersion() != NyExitProtoId {
+			return device.TcPass, nil
+		}
+		action, err := n.handleExitPacket(s, packet)
+		if err != nil && state.DBG_trace_tc {
+			t.Submit(fmt.Sprintf("ExitDrop: reason %v\n", err))
+		}
+		return action, err
+	})
 }
 
 func (n *Nylon) SendNylon(pkt *protocol.Ny, endpoint conn.Endpoint, peer *device.Peer) error {
 	return n.SendNylonBundle(&protocol.TransportBundle{Packets: []*protocol.Ny{pkt}}, endpoint, peer)
+}
+
+func (n *Nylon) wrapExitPacket(packet *device.TCElement, exitNode, originNode state.NodeId) error {
+	exit := []byte(exitNode)
+	origin := []byte(originNode)
+	if len(exit) > 255 || len(origin) > 255 {
+		return errors.New("node id too long")
+	}
+
+	origLen := len(packet.Packet)
+	headerLen := device.PolyHeaderSize + 3 + len(exit) + len(origin)
+	totalLen := headerLen + origLen
+	if totalLen > len(packet.Buffer)-device.MessageTransportHeaderSize {
+		return errors.New("packet too large for exit encapsulation")
+	}
+
+	buf := packet.Buffer[device.MessageTransportHeaderSize : device.MessageTransportHeaderSize+totalLen]
+	copy(buf[headerLen:], packet.Packet)
+	packet.Packet = buf
+	packet.SetIPVersion(NyExitProtoId)
+	packet.SetLength(uint16(totalLen))
+	payload := packet.Payload()
+	payload[0] = exitPacketHopLimit
+	payload[1] = byte(len(exit))
+	payload[2] = byte(len(origin))
+	copy(payload[3:], exit)
+	copy(payload[3+len(exit):], origin)
+	return nil
+}
+
+type exitPacket struct {
+	hopLimit uint8
+	exit     state.NodeId
+	origin   state.NodeId
+	inner    []byte
+}
+
+func parseExitPacket(packet *device.TCElement) (exitPacket, error) {
+	payload := packet.Payload()
+	if len(payload) < 3 {
+		return exitPacket{}, errors.New("malformed exit packet")
+	}
+	exitLen := int(payload[1])
+	originLen := int(payload[2])
+	headerLen := 3 + exitLen + originLen
+	if len(payload) <= headerLen {
+		return exitPacket{}, errors.New("exit packet missing inner packet")
+	}
+	return exitPacket{
+		hopLimit: payload[0],
+		exit:     state.NodeId(string(payload[3 : 3+exitLen])),
+		origin:   state.NodeId(string(payload[3+exitLen : headerLen])),
+		inner:    payload[headerLen:],
+	}, nil
+}
+
+func (n *Nylon) handleExitPacket(s *state.State, packet *device.TCElement) (device.TCAction, error) {
+	r := Get[*NylonRouter](s)
+	t := Get[*NylonTrace](s)
+	ep, err := parseExitPacket(packet)
+	if err != nil {
+		return device.TcDrop, err
+	}
+	if ep.hopLimit == 0 {
+		return device.TcDrop, errors.New("exit packet hop limit exceeded")
+	}
+
+	if ep.exit != s.Id {
+		entry, ok := r.ForwardEntryToNode(ep.exit)
+		if !ok || entry.Peer == nil {
+			return device.TcDrop, fmt.Errorf("no route to exit node %s", ep.exit)
+		}
+		packet.Payload()[0]--
+		packet.ToPeer = entry.Peer
+		packet.Priority = device.TcMediumPriority
+		if state.DBG_trace_tc {
+			t.Submit(fmt.Sprintf("ExitTransit: origin %s exit %s via %s\n", ep.origin, ep.exit, entry.Nh))
+		}
+		return device.TcForward, nil
+	}
+
+	if !s.LocalCfg.AdvertiseExitNode {
+		return device.TcDrop, errors.New("local node is not advertising exit service")
+	}
+	src, err := packetSrc(ep.inner)
+	if err != nil {
+		return device.TcDrop, err
+	}
+	if !nodeOwnsAddr(&s.CentralCfg, ep.origin, src) {
+		return device.TcDrop, fmt.Errorf("source %s is not owned by origin node %s", src, ep.origin)
+	}
+	dst, err := packetDst(ep.inner)
+	if err != nil {
+		return device.TcDrop, err
+	}
+	if state.DBG_trace_tc {
+		t.Submit(fmt.Sprintf("ExitDecap: origin %s %s -> %s\n", ep.origin, src, dst))
+	}
+	copy(packet.Packet[:len(ep.inner)], ep.inner)
+	packet.Packet = packet.Packet[:len(ep.inner)]
+	packet.ParsePacket()
+	return device.TcBounce, nil
+}
+
+func packetSrc(packet []byte) (netip.Addr, error) {
+	return packetAddr(packet, true)
+}
+
+func packetDst(packet []byte) (netip.Addr, error) {
+	return packetAddr(packet, false)
+}
+
+func packetAddr(packet []byte, src bool) (netip.Addr, error) {
+	if len(packet) == 0 {
+		return netip.Addr{}, errors.New("empty inner packet")
+	}
+	switch packet[0] >> 4 {
+	case 4:
+		offset := device.IPv4offsetDst
+		if src {
+			offset = device.IPv4offsetSrc
+		}
+		if len(packet) < offset+net.IPv4len {
+			return netip.Addr{}, errors.New("short IPv4 packet")
+		}
+		return netip.AddrFrom4([4]byte(packet[offset : offset+net.IPv4len])), nil
+	case 6:
+		offset := device.IPv6offsetDst
+		if src {
+			offset = device.IPv6offsetSrc
+		}
+		if len(packet) < offset+net.IPv6len {
+			return netip.Addr{}, errors.New("short IPv6 packet")
+		}
+		return netip.AddrFrom16([16]byte(packet[offset : offset+net.IPv6len])), nil
+	default:
+		return netip.Addr{}, errors.New("inner packet is not IP")
+	}
+}
+
+func nodeOwnsAddr(cfg *state.CentralCfg, node state.NodeId, addr netip.Addr) bool {
+	n := cfg.TryGetNode(node)
+	if n == nil {
+		return false
+	}
+	for _, prefix := range n.Prefixes {
+		if prefix.GetPrefix().Contains(addr) {
+			return true
+		}
+	}
+	for _, nodeAddr := range n.Addresses {
+		if nodeAddr == addr {
+			return true
+		}
+	}
+	if cfg.IsRouter(node) {
+		for _, peer := range cfg.GetPeers(node) {
+			if !cfg.IsClient(peer) {
+				continue
+			}
+			client := cfg.GetClient(peer)
+			for _, prefix := range client.Prefixes {
+				if prefix.GetPrefix().Contains(addr) {
+					return true
+				}
+			}
+			for _, nodeAddr := range client.Addresses {
+				if nodeAddr == addr {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (n *Nylon) SendNylonBundle(pkt *protocol.TransportBundle, endpoint conn.Endpoint, peer *device.Peer) error {

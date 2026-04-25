@@ -61,6 +61,12 @@ func NodeConfigValidator(node *LocalCfg) error {
 			return err
 		}
 	}
+	if node.AdvertiseExitNode && node.ExitNode != "" {
+		return fmt.Errorf("node %s cannot advertise an exit node and use exit_node %s at the same time", node.Id, node.ExitNode)
+	}
+	if node.ExitNode == node.Id {
+		return fmt.Errorf("node %s cannot use itself as exit_node", node.Id)
+	}
 	if len(node.DnsResolvers) != 0 {
 		for _, resolver := range node.DnsResolvers {
 			if _, err := netip.ParseAddrPort(resolver); err != nil {

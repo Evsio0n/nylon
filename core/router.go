@@ -181,18 +181,6 @@ func (r *NylonRouter) Init(s *state.State) error {
 		}
 	}
 
-	if s.LocalCfg.AdvertiseExitNode {
-		for _, prefixStr := range []string{"0.0.0.0/0", "::/0"} {
-			prefix := netip.MustParsePrefix(prefixStr)
-			s.RouterState.Advertised[prefix] = state.Advertisement{
-				NodeId:        s.Id,
-				Expiry:        maxTime,
-				IsPassiveHold: false,
-				MetricFn:      func() uint32 { return 0 },
-			}
-		}
-	}
-
 	s.Log.Debug("schedule router tasks")
 
 	s.Env.RepeatTask(func(s *state.State) error {
@@ -208,24 +196,13 @@ func (r *NylonRouter) Init(s *state.State) error {
 	return nil
 }
 
-// ComputeSysRouteTable computes: computed = prefixes - (((r.CentralCfg.ExcludeIPs U selected self prefixes) - r.LocalCfg.UnexcludeIPs) U r.LocalCfg.ExcludeIPs)
+// ComputeSysRouteTable computes the local OS capture routes. Exit defaults are
+// local capture policy only; they are never advertised through Babel.
 func (r *NylonRouter) ComputeSysRouteTable() []netip.Prefix {
 	prefixes := make([]netip.Prefix, 0)
 	selectedSelf := make(map[netip.Prefix]struct{})
 
-	allowExit := r.LocalCfg.AllowExitNode || r.LocalCfg.ExitNode != ""
-
 	for entry, v := range r.Routes {
-		// filter out exit node routes if not allowed
-		if (entry == netip.MustParsePrefix("0.0.0.0/0") || entry == netip.MustParsePrefix("::/0")) && v.Nh != r.Id {
-			if !allowExit {
-				continue
-			}
-			if r.LocalCfg.ExitNode != "" && v.NodeId != r.LocalCfg.ExitNode {
-				continue // manual exit node selection
-			}
-		}
-
 		prefixes = append(prefixes, entry)
 		if v.Nh == r.Id {
 			selectedSelf[entry] = struct{}{}
@@ -237,7 +214,17 @@ func (r *NylonRouter) ComputeSysRouteTable() []netip.Prefix {
 		defaultExcludes = append(defaultExcludes, p)
 	}
 	exclude := append(state.SubtractPrefix(defaultExcludes, r.LocalCfg.UnexcludeIPs), r.LocalCfg.ExcludeIPs...)
-	return state.SubtractPrefix(prefixes, exclude)
+	routes := state.SubtractPrefix(prefixes, exclude)
+
+	if r.LocalCfg.ExitNode != "" {
+		exitDefaults := []netip.Prefix{
+			netip.MustParsePrefix("0.0.0.0/0"),
+			netip.MustParsePrefix("::/0"),
+		}
+		routes = append(routes, state.SubtractPrefix(exitDefaults, exclude)...)
+	}
+
+	return state.CoalescePrefix(routes)
 }
 
 func (r *NylonRouter) updatePassiveClient(s *state.State, prefix state.PrefixHealthWrapper, node state.NodeId, passiveHold bool) {

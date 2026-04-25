@@ -55,6 +55,23 @@ func TestNodeConfigValidator_DnsResolver(t *testing.T) {
 	}))
 }
 
+func TestNodeConfigValidator_ExitNodeChainRejected(t *testing.T) {
+	base := LocalCfg{
+		Id:   "valid-node",
+		Port: 5,
+		Key:  [32]byte{1},
+	}
+
+	cfg := base
+	cfg.AdvertiseExitNode = true
+	cfg.ExitNode = "other-node"
+	assert.Error(t, NodeConfigValidator(&cfg))
+
+	cfg = base
+	cfg.ExitNode = cfg.Id
+	assert.Error(t, NodeConfigValidator(&cfg))
+}
+
 func TestCentralConfigValidator_OverlappingPrefix(t *testing.T) {
 	cfg := &CentralCfg{
 		Routers: []RouterCfg{
