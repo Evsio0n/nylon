@@ -114,6 +114,13 @@ fwmark=%d
 		if err != nil {
 			return err
 		}
+
+		if s.LocalCfg.AdvertiseExitNode {
+			err = SetupExitNode(s.Log, itfName)
+			if err != nil {
+				s.Log.Error("failed to setup exit node", "err", err)
+			}
+		}
 	}
 
 	// run post-up commands
@@ -138,7 +145,13 @@ func (n *Nylon) cleanupWireGuard(s *state.State) error {
 			s.Log.Error("failed to remove route", "err", err)
 		}
 	}
-	CleanupInterface(s.Log, n.itfName, n.fwmark)
+	if !s.NoNetConfigure {
+		if s.LocalCfg.AdvertiseExitNode {
+			CleanupExitNode(s.Log, n.itfName)
+		}
+		CleanupInterface(s.Log, n.itfName, n.fwmark)
+	}
+
 	// run pre-down commands
 	for _, cmd := range s.PreDown {
 		err := ExecSplit(s.Log, cmd)

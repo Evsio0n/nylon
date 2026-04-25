@@ -23,7 +23,7 @@ var runCmd = &cobra.Command{
 			isVerbose = true
 		}
 
-		core.Bootstrap(centralPath, nodePath, logPath, isVerbose)
+		core.Bootstrap(centralPath, nodePath, logPath, isVerbose, cmd)
 	},
 	GroupID: "ny",
 }
@@ -42,4 +42,8 @@ func init() {
 	runCmd.Flags().StringP("config", "c", DefaultConfigPath, "Path to the config file")
 	runCmd.Flags().StringP("node", "n", DefaultNodeConfigPath, "Path to the node config file")
 	runCmd.Flags().StringP("log", "l", "", "Path to the log file (overrides config)")
+
+	runCmd.Flags().Bool("advertise-exit-node", false, "Advertise this node as an exit node")
+	runCmd.Flags().Bool("allow-exit-node", false, "Allow using an exit node from the network")
+	runCmd.Flags().String("exit-node", "", "Manually select an exit node to use")
 }

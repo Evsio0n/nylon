@@ -55,3 +55,25 @@ func RemoveRoute(logger *slog.Logger, dev tun.Device, itfName string, route neti
 	table := fmt.Sprintf("%d", fwmark)
 	return Exec(logger, "ip", "route", "del", route.String(), "dev", itfName, "table", table)
 }
+
+func SetupExitNode(logger *slog.Logger, ifName string) error {
+	// Enable IP forwarding
+	if err := Exec(logger, "sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
+		return err
+	}
+	if err := Exec(logger, "sysctl", "-w", "net.ipv6.conf.all.forwarding=1"); err != nil {
+		return err
+	}
+	// Setup MASQUERADE
+	// We use iptables for now, as it is most commonly available.
+	// We try both iptables and nftables if possible, but iptables is a safe bet for compatibility.
+	if err := Exec(logger, "iptables", "-t", "nat", "-A", "POSTROUTING", "-o", ifName, "-j", "RETURN"); err == nil {
+		// This is to prevent masquerading traffic destined for the nylon interface itself if it somehow ends up in POSTROUTING
+	}
+	// Masquerade all traffic coming from nylon interface going out to other interfaces
+	return Exec(logger, "iptables", "-t", "nat", "-A", "POSTROUTING", "-s", "0.0.0.0/0", "-j", "MASQUERADE")
+}
+
+func CleanupExitNode(logger *slog.Logger, ifName string) {
+	_ = Exec(logger, "iptables", "-t", "nat", "-D", "POSTROUTING", "-s", "0.0.0.0/0", "-j", "MASQUERADE")
+}

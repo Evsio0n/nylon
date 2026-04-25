@@ -70,3 +70,9 @@ func RemoveRoute(logger *slog.Logger, dev tun.Device, itfName string, route neti
 		return Exec(logger, "route", "delete", addr.String(), "mask", maskStr, "0.0.0.0", "IF", ifIndex)
 	}
 }
+
+func SetupExitNode(logger *slog.Logger, ifName string) error {
+	return nil
+}
+
+func CleanupExitNode(logger *slog.Logger, ifName string) {}

@@ -21,6 +21,7 @@ import (
 	"github.com/encodeous/tint"
 	"github.com/goccy/go-yaml"
 	slogmulti "github.com/samber/slog-multi"
+	"github.com/spf13/cobra"
 )
 
 func setupDebugging() {
@@ -107,7 +108,7 @@ func readNodeConfig(nodePath string) (*state.LocalCfg, error) {
 }
 
 // Bootstrap manages the lifetime of the whole application. Nylon may be restarted multiple times, but Bootstrap is only called once.
-func Bootstrap(centralPath, nodePath, logPath string, verbose bool) {
+func Bootstrap(centralPath, nodePath, logPath string, verbose bool, cmd *cobra.Command) {
 	setupDebugging()
 	level := slog.LevelInfo
 	if verbose {
@@ -125,6 +126,21 @@ func Bootstrap(centralPath, nodePath, logPath string, verbose bool) {
 		}
 		if logPath != "" {
 			nodeCfg.LogPath = logPath
+		}
+
+		if cmd != nil {
+			if cmd.Flags().Changed("advertise-exit-node") {
+				val, _ := cmd.Flags().GetBool("advertise-exit-node")
+				nodeCfg.AdvertiseExitNode = val
+			}
+			if cmd.Flags().Changed("allow-exit-node") {
+				val, _ := cmd.Flags().GetBool("allow-exit-node")
+				nodeCfg.AllowExitNode = val
+			}
+			if cmd.Flags().Changed("exit-node") {
+				val, _ := cmd.Flags().GetString("exit-node")
+				nodeCfg.ExitNode = state.NodeId(val)
+			}
 		}
 
 		state.ExpandCentralConfig(centralCfg)

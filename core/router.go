@@ -181,6 +181,18 @@ func (r *NylonRouter) Init(s *state.State) error {
 		}
 	}
 
+	if s.LocalCfg.AdvertiseExitNode {
+		for _, prefixStr := range []string{"0.0.0.0/0", "::/0"} {
+			prefix := netip.MustParsePrefix(prefixStr)
+			s.RouterState.Advertised[prefix] = state.Advertisement{
+				NodeId:        s.Id,
+				Expiry:        maxTime,
+				IsPassiveHold: false,
+				MetricFn:      func() uint32 { return 0 },
+			}
+		}
+	}
+
 	s.Log.Debug("schedule router tasks")
 
 	s.Env.RepeatTask(func(s *state.State) error {
@@ -200,7 +212,20 @@ func (r *NylonRouter) Init(s *state.State) error {
 func (r *NylonRouter) ComputeSysRouteTable() []netip.Prefix {
 	prefixes := make([]netip.Prefix, 0)
 	selectedSelf := make(map[netip.Prefix]struct{})
+
+	allowExit := r.LocalCfg.AllowExitNode || r.LocalCfg.ExitNode != ""
+
 	for entry, v := range r.Routes {
+		// filter out exit node routes if not allowed
+		if (entry == netip.MustParsePrefix("0.0.0.0/0") || entry == netip.MustParsePrefix("::/0")) && v.Nh != r.Id {
+			if !allowExit {
+				continue
+			}
+			if r.LocalCfg.ExitNode != "" && v.NodeId != r.LocalCfg.ExitNode {
+				continue // manual exit node selection
+			}
+		}
+
 		prefixes = append(prefixes, entry)
 		if v.Nh == r.Id {
 			selectedSelf[entry] = struct{}{}

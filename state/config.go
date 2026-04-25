@@ -57,10 +57,14 @@ type LocalCfg struct {
 	NoNetConfigure   bool                  `yaml:"no_net_configure,omitempty"`   // do not configure system networking at all
 	DnsResolvers     []string              `yaml:"dns_resolvers,omitempty"`      // dns resolvers used by nylon, currently only for config repo
 	InterfaceName    string                `yaml:"interface_name,omitempty"`     // the name of the nylon interface
+	LogLevel         string                `yaml:"log_level,omitempty"`          // debug, info, warn, or error
 	LogPath          string                `yaml:"log_path,omitempty"`           // if not empty, nylon will write to this file
 	Fwmark           uint32                `yaml:"fwmark,omitempty"`             // firewall mark for policy routing on Linux (0 = use port value); prevents routing loops when running alongside other VPNs (e.g. Tailscale)
 	UnexcludeIPs     []netip.Prefix        `yaml:"unexclude_ips,omitempty"`      // split tunnel, subtracts from centrally excluded ip ranges
 	ExcludeIPs       []netip.Prefix        `yaml:"exclude_ips,omitempty"`        // split tunnel, adds to the centrally excluded ip ranges
+	AllowExitNode    bool                  `yaml:"allow_exit_node,omitempty"`    // allow using an exit node from the network
+	AdvertiseExitNode bool                 `yaml:"advertise_exit_node,omitempty"` // advertise this node as an exit node
+	ExitNode         NodeId                `yaml:"exit_node,omitempty"`          // manually select an exit node to use
 	PreUp            []string              `yaml:"pre_up,omitempty"`             // a list of commands executed in order before the nylon interface is brought up
 	PreDown          []string              `yaml:"pre_down,omitempty"`           // a list of commands executed in order before the nylon interface is brought down
 	PostUp           []string              `yaml:"post_up,omitempty"`            // a list of commands executed in order after the nylon interface is brought up

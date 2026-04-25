@@ -16,14 +16,22 @@ import (
 func NewWireGuardDevice(s *state.State, n *Nylon) (dev *device.Device, tunDevice tun.Device, realItf string, err error) {
 	itfName := s.InterfaceName // attempt to name the interface
 
-	if runtime.GOOS == "darwin" {
-		itfName = "utun"
+	var tdev tun.Device
+	isMobile, _ := s.AuxConfig["isMobile"].(bool)
+
+	// Check for pre-created TUN device (mobile / NetworkExtension)
+	if preTUN, ok := s.AuxConfig["tunDevice"].(tun.Device); ok {
+		tdev = preTUN
+	} else {
+		if runtime.GOOS == "darwin" {
+			itfName = "utun"
+		}
+		tdev, err = tun.CreateTUN(itfName, device.DefaultMTU)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("failed to create TUN: %v. Check if an interface with the name nylon exists already", err)
+		}
 	}
 
-	tdev, err := tun.CreateTUN(itfName, device.DefaultMTU)
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("failed to create TUN: %v. Check if an interface with the name nylon exists already", err)
-	}
 	realInterfaceName, err := tdev.Name()
 	if err == nil {
 		itfName = realInterfaceName
@@ -44,26 +52,33 @@ func NewWireGuardDevice(s *state.State, n *Nylon) (dev *device.Device, tunDevice
 		},
 	})
 
-	// start uapi for wg command
-	n.wgUapi, err = InitUAPI(s.Env, itfName)
-	if err != nil {
-		return nil, nil, "", err
+	// Apply mobile-specific WireGuard quirks
+	if isMobile {
+		dev.DisableSomeRoamingForBrokenMobileSemantics()
 	}
 
-	if n.wgUapi != nil {
-		go func() {
-			for s.Context.Err() == nil {
-				accept, err := n.wgUapi.Accept()
-				if err != nil {
-					s.Env.Log.Debug(err.Error())
-					continue
+	// start uapi for wg command (skip on mobile)
+	if !isMobile {
+		n.wgUapi, err = InitUAPI(s.Env, itfName)
+		if err != nil {
+			return nil, nil, "", err
+		}
+
+		if n.wgUapi != nil {
+			go func() {
+				for s.Context.Err() == nil {
+					accept, err := n.wgUapi.Accept()
+					if err != nil {
+						s.Env.Log.Debug(err.Error())
+						continue
+					}
+					go dev.IpcHandle(accept)
 				}
-				go dev.IpcHandle(accept)
-			}
-		}()
+			}()
+		}
 	}
 
-	s.Log.Info("Created WireGuard interface", "name", itfName)
+	s.Log.Info("Created WireGuard interface", "name", itfName, "mobile", isMobile)
 	return dev, tdev, itfName, nil
 }
 
