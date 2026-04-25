@@ -116,7 +116,7 @@ fwmark=%d
 		}
 
 		if s.LocalCfg.AdvertiseExitNode {
-			err = SetupExitNode(s.Log, itfName)
+			err = SetupExitNode(s.Log, itfName, s.GetPrefixes())
 			if err != nil {
 				s.Log.Error("failed to setup exit node", "err", err)
 			}
@@ -147,7 +147,7 @@ func (n *Nylon) cleanupWireGuard(s *state.State) error {
 	}
 	if !s.NoNetConfigure {
 		if s.LocalCfg.AdvertiseExitNode {
-			CleanupExitNode(s.Log, n.itfName)
+			CleanupExitNode(s.Log, n.itfName, s.GetPrefixes())
 		}
 		CleanupInterface(s.Log, n.itfName, n.fwmark)
 	}

@@ -56,7 +56,7 @@ func RemoveRoute(logger *slog.Logger, dev tun.Device, itfName string, route neti
 	return Exec(logger, "ip", "route", "del", route.String(), "dev", itfName, "table", table)
 }
 
-func SetupExitNode(logger *slog.Logger, ifName string) error {
+func SetupExitNode(logger *slog.Logger, ifName string, sourcePrefixes []netip.Prefix) error {
 	// Enable IP forwarding
 	if err := Exec(logger, "sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
 		return err
@@ -67,13 +67,68 @@ func SetupExitNode(logger *slog.Logger, ifName string) error {
 	// Setup MASQUERADE
 	// We use iptables for now, as it is most commonly available.
 	// We try both iptables and nftables if possible, but iptables is a safe bet for compatibility.
-	if err := Exec(logger, "iptables", "-t", "nat", "-A", "POSTROUTING", "-o", ifName, "-j", "RETURN"); err == nil {
-		// This is to prevent masquerading traffic destined for the nylon interface itself if it somehow ends up in POSTROUTING
+	cleanupLegacyExitNodeRules(logger, ifName)
+	// This prevents masquerading traffic destined for the nylon interface itself if it somehow ends up in POSTROUTING.
+	if err := ensureIptablesRule(logger, "-t", "nat", "-A", "POSTROUTING", "-o", ifName, "-j", "RETURN"); err != nil {
+		return err
 	}
-	// Masquerade all traffic coming from nylon interface going out to other interfaces
-	return Exec(logger, "iptables", "-t", "nat", "-A", "POSTROUTING", "-s", "0.0.0.0/0", "-j", "MASQUERADE")
+	for _, prefix := range exitMasqueradePrefixes(sourcePrefixes) {
+		if err := ensureIptablesRule(logger, "-t", "nat", "-A", "POSTROUTING", "-s", prefix.String(), "-j", "MASQUERADE"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func CleanupExitNode(logger *slog.Logger, ifName string) {
-	_ = Exec(logger, "iptables", "-t", "nat", "-D", "POSTROUTING", "-s", "0.0.0.0/0", "-j", "MASQUERADE")
+func CleanupExitNode(logger *slog.Logger, ifName string, sourcePrefixes []netip.Prefix) {
+	for _, prefix := range exitMasqueradePrefixes(sourcePrefixes) {
+		_ = Exec(logger, "iptables", "-t", "nat", "-D", "POSTROUTING", "-s", prefix.String(), "-j", "MASQUERADE")
+	}
+	_ = Exec(logger, "iptables", "-t", "nat", "-D", "POSTROUTING", "-o", ifName, "-j", "RETURN")
+	cleanupLegacyExitNodeRules(logger, ifName)
+}
+
+func ensureIptablesRule(logger *slog.Logger, args ...string) error {
+	checkArgs := append([]string{}, args...)
+	for i, arg := range checkArgs {
+		if arg == "-A" {
+			checkArgs[i] = "-C"
+			break
+		}
+	}
+	if err := execIptables(logger, checkArgs...); err == nil {
+		return nil
+	}
+	return execIptables(logger, args...)
+}
+
+func execIptables(logger *slog.Logger, args ...string) error {
+	return Exec(logger, "iptables", args...)
+}
+
+func cleanupLegacyExitNodeRules(logger *slog.Logger, ifName string) {
+	for Exec(logger, "iptables", "-t", "nat", "-D", "POSTROUTING", "-j", "MASQUERADE") == nil {
+	}
+	for Exec(logger, "iptables", "-t", "nat", "-D", "POSTROUTING", "!", "-o", "lo", "-j", "MASQUERADE") == nil {
+	}
+	for Exec(logger, "iptables", "-t", "nat", "-D", "POSTROUTING", "-o", ifName, "-j", "RETURN") == nil {
+	}
+}
+
+func exitMasqueradePrefixes(prefixes []netip.Prefix) []netip.Prefix {
+	result := make([]netip.Prefix, 0, len(prefixes))
+	seen := make(map[netip.Prefix]struct{}, len(prefixes))
+	for _, prefix := range prefixes {
+		addr := prefix.Addr().Unmap()
+		if !prefix.IsValid() || !addr.Is4() || prefix.Bits() == 0 {
+			continue
+		}
+		normalized := netip.PrefixFrom(addr, prefix.Bits()).Masked()
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		result = append(result, normalized)
+	}
+	return state.CoalescePrefix(result)
 }

@@ -75,8 +75,8 @@ func RemoveRoute(logger *slog.Logger, dev tun.Device, itfName string, route neti
 	}
 }
 
-func SetupExitNode(logger *slog.Logger, ifName string) error {
+func SetupExitNode(logger *slog.Logger, ifName string, sourcePrefixes []netip.Prefix) error {
 	return nil
 }
 
-func CleanupExitNode(logger *slog.Logger, ifName string) {}
+func CleanupExitNode(logger *slog.Logger, ifName string, sourcePrefixes []netip.Prefix) {}
