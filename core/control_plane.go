@@ -112,9 +112,10 @@ type ForwardEntry struct {
 }
 
 type StatusResponse struct {
-	NodeId    string `json:"node_id"`
-	IsRouter  bool   `json:"is_router"`
-	StartedAt string `json:"started_at"`
+	NodeId     string `json:"node_id"`
+	IsRouter   bool   `json:"is_router"`
+	IsExitNode bool   `json:"is_exit_node"`
+	StartedAt  string `json:"started_at"`
 }
 
 // WSEvent is the envelope for WebSocket messages sent to clients.
@@ -229,8 +230,9 @@ func (cp *ControlPlane) Cleanup(s *state.State) error {
 
 func (cp *ControlPlane) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp := StatusResponse{
-		NodeId:   string(cp.env.LocalCfg.Id),
-		IsRouter: cp.env.IsRouter(cp.env.LocalCfg.Id),
+		NodeId:     string(cp.env.LocalCfg.Id),
+		IsRouter:   cp.env.IsRouter(cp.env.LocalCfg.Id),
+		IsExitNode: cp.env.LocalCfg.AdvertiseExitNode,
 	}
 	writeJSON(w, resp)
 }
@@ -639,13 +641,14 @@ func (cp *ControlPlane) listenMeshDelayed(s *state.State, handler http.Handler) 
 
 const (
 	defaultControlPlanePort = 58175
-	topologyQueryTimeout   = 5 * time.Second
+	topologyQueryTimeout    = 5 * time.Second
 )
 
 // neighbourTopology is the JSON shape we fetch from each neighbour's /api/v1/status + /api/v1/neighbours.
 type neighbourTopology struct {
 	NodeID     string `json:"node_id"`
 	IsRouter   bool   `json:"is_router"`
+	IsExitNode bool   `json:"is_exit_node"`
 	Neighbours []struct {
 		ID         string `json:"id"`
 		BestMetric uint32 `json:"best_metric"`
@@ -662,9 +665,10 @@ func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	type topoNode struct {
-		ID       string `json:"id"`
-		IsRouter bool   `json:"is_router"`
-		IsSelf   bool   `json:"is_self"`
+		ID         string `json:"id"`
+		IsRouter   bool   `json:"is_router"`
+		IsExitNode bool   `json:"is_exit_node"`
+		IsSelf     bool   `json:"is_self"`
 	}
 	type topoEdge struct {
 		From   string `json:"from"`
@@ -679,7 +683,12 @@ func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
 	myID := string(cp.env.LocalCfg.Id)
 
 	// Add self
-	nodeMap[myID] = topoNode{ID: myID, IsRouter: cp.env.IsRouter(state.NodeId(myID)), IsSelf: true}
+	nodeMap[myID] = topoNode{
+		ID:         myID,
+		IsRouter:   cp.env.IsRouter(state.NodeId(myID)),
+		IsExitNode: cp.env.LocalCfg.AdvertiseExitNode,
+		IsSelf:     true,
+	}
 
 	// Get our own neighbours via dispatch
 	type ownNeigh struct {
@@ -754,7 +763,7 @@ func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Update node info from remote
-		nodeMap[item.id] = topoNode{ID: topo.NodeID, IsRouter: topo.IsRouter}
+		nodeMap[item.id] = topoNode{ID: topo.NodeID, IsRouter: topo.IsRouter, IsExitNode: topo.IsExitNode}
 
 		for _, nb := range topo.Neighbours {
 			if nb.BestMetric >= state.INF { // unreachable
@@ -807,8 +816,9 @@ func (cp *ControlPlane) queryNodeTopology(ctx context.Context, addr string) *nei
 	defer statusResp.Body.Close()
 
 	var status struct {
-		NodeID   string `json:"node_id"`
-		IsRouter bool   `json:"is_router"`
+		NodeID     string `json:"node_id"`
+		IsRouter   bool   `json:"is_router"`
+		IsExitNode bool   `json:"is_exit_node"`
 	}
 	if err := json.NewDecoder(statusResp.Body).Decode(&status); err != nil {
 		return nil
@@ -832,6 +842,7 @@ func (cp *ControlPlane) queryNodeTopology(ctx context.Context, addr string) *nei
 	return &neighbourTopology{
 		NodeID:     status.NodeID,
 		IsRouter:   status.IsRouter,
+		IsExitNode: status.IsExitNode,
 		Neighbours: neighs,
 	}
 }
