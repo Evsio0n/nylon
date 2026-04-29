@@ -11,6 +11,7 @@ import (
 const controlPlaneAddr = "http://127.0.0.1:58175/api/v1"
 
 var httpClient = &http.Client{Timeout: 5 * time.Second}
+var topologyHTTPClient = &http.Client{Timeout: 8 * time.Second}
 
 // GetStatus returns JSON of the node status.
 // Queries the ControlPlane API running inside the extension process.
@@ -35,12 +36,16 @@ func (n *NylonMobile) GetRoutes() string {
 
 // GetTopology returns JSON of the full mesh topology (nodes + edges).
 func (n *NylonMobile) GetTopology() string {
-	return fetchAPI("/topology")
+	return fetchAPIWithClient(topologyHTTPClient, "/topology")
 }
 
 // fetchAPI queries the ControlPlane REST API and returns the raw JSON response.
 func fetchAPI(path string) string {
-	resp, err := httpClient.Get(controlPlaneAddr + path)
+	return fetchAPIWithClient(httpClient, path)
+}
+
+func fetchAPIWithClient(client *http.Client, path string) string {
+	resp, err := client.Get(controlPlaneAddr + path)
 	if err != nil {
 		data, _ := json.Marshal(map[string]string{"error": err.Error()})
 		return string(data)
