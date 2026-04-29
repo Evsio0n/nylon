@@ -5,7 +5,10 @@ import (
 	"cmp"
 	"encoding/hex"
 	"fmt"
+	"net"
+	"net/netip"
 	"slices"
+	"time"
 
 	"github.com/encodeous/nylon/polyamide/conn"
 	"github.com/encodeous/nylon/polyamide/device"
@@ -79,6 +82,9 @@ fwmark=%d
 		for _, nep := range rcfg.Endpoints {
 			ap, err := nep.Get()
 			if err != nil {
+				continue
+			}
+			if !endpointIsLocallyRoutable(ap) {
 				continue
 			}
 			endpoint, err := n.Device.Bind().ParseEndpoint(ap.String())
@@ -192,6 +198,10 @@ func UpdateWireGuard(s *state.State) error {
 				return cmp.Compare(a.Metric(), b.Metric())
 			})
 			for _, ep := range links {
+				ap, err := ep.AsNylonEndpoint().DynEP.Get()
+				if err != nil || !endpointIsLocallyRoutable(ap) {
+					continue
+				}
 				nep, err := ep.AsNylonEndpoint().GetWgEndpoint(n.Device)
 				if err != nil {
 					continue
@@ -204,6 +214,9 @@ func UpdateWireGuard(s *state.State) error {
 		for _, ep := range pcfg.Endpoints {
 			ap, err := ep.Get()
 			if err != nil {
+				continue
+			}
+			if !endpointIsLocallyRoutable(ap) {
 				continue
 			}
 			if !slices.ContainsFunc(eps, func(endpoint conn.Endpoint) bool {
@@ -249,4 +262,16 @@ func UpdateWireGuard(s *state.State) error {
 		n.prevInstalledRoutes = newEntries
 	}
 	return nil
+}
+
+func endpointIsLocallyRoutable(ap netip.AddrPort) bool {
+	if !ap.Addr().Is6() {
+		return true
+	}
+	conn, err := net.DialTimeout("udp6", ap.String(), 100*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }

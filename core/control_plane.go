@@ -640,8 +640,9 @@ func (cp *ControlPlane) listenMeshDelayed(s *state.State, handler http.Handler) 
 // --- Topology aggregation ---
 
 const (
-	defaultControlPlanePort = 58175
-	topologyQueryTimeout    = 5 * time.Second
+	defaultControlPlanePort  = 58175
+	topologyQueryTimeout     = 2 * time.Second
+	topologyNodeQueryTimeout = 750 * time.Millisecond
 )
 
 // neighbourTopology is the JSON shape we fetch from each neighbour's /api/v1/status + /api/v1/neighbours.
@@ -806,10 +807,17 @@ func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
 
 // queryNodeTopology fetches /api/v1/status + /api/v1/neighbours from a remote node via mesh.
 func (cp *ControlPlane) queryNodeTopology(ctx context.Context, addr string) *neighbourTopology {
-	client := &http.Client{Timeout: topologyQueryTimeout}
+	ctx, cancel := context.WithTimeout(ctx, topologyNodeQueryTimeout)
+	defer cancel()
+
+	client := &http.Client{Timeout: topologyNodeQueryTimeout}
 
 	// Fetch status
-	statusResp, err := client.Get("http://" + addr + apiV1Prefix + "/status")
+	statusReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+apiV1Prefix+"/status", nil)
+	if err != nil {
+		return nil
+	}
+	statusResp, err := client.Do(statusReq)
 	if err != nil {
 		return nil
 	}
@@ -825,7 +833,11 @@ func (cp *ControlPlane) queryNodeTopology(ctx context.Context, addr string) *nei
 	}
 
 	// Fetch neighbours
-	neighResp, err := client.Get("http://" + addr + apiV1Prefix + "/neighbours")
+	neighReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+apiV1Prefix+"/neighbours", nil)
+	if err != nil {
+		return nil
+	}
+	neighResp, err := client.Do(neighReq)
 	if err != nil {
 		return nil
 	}
