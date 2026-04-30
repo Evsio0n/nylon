@@ -72,6 +72,21 @@ func TestNodeConfigValidator_ExitNodeChainRejected(t *testing.T) {
 	assert.Error(t, NodeConfigValidator(&cfg))
 }
 
+func TestCentralConfigValidatorRejectsDuplicateAddresses(t *testing.T) {
+	cfg := CentralCfg{
+		Routers: []RouterCfg{
+			{NodeCfg: NodeCfg{Id: "router-a", Addresses: []netip.Addr{netip.MustParseAddr("10.0.0.1")}}},
+			{NodeCfg: NodeCfg{Id: "router-b", Addresses: []netip.Addr{netip.MustParseAddr("10.0.0.1")}}},
+		},
+		Graph: []string{"router-a, router-b"},
+	}
+
+	err := CentralConfigValidator(&cfg)
+	if err == nil {
+		t.Fatalf("expected duplicate address error")
+	}
+}
+
 func TestCentralConfigValidator_OverlappingPrefix(t *testing.T) {
 	cfg := &CentralCfg{
 		Routers: []RouterCfg{
