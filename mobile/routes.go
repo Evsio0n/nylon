@@ -85,16 +85,14 @@ func getRouter(s *state.State) *core.NylonRouter {
 
 func buildIPv4Excludes(env *state.Env) []netip.Prefix {
 	excluded := make([]netip.Prefix, 0)
-	defaultExcludes := state.SubtractPrefix(env.CentralCfg.ExcludeIPs, env.LocalCfg.UnexcludeIPs)
+	defaultExcludes := append([]netip.Prefix{}, env.CentralCfg.ExcludeIPs...)
+	defaultExcludes = append(defaultExcludes, state.DefaultLocalIPv4Excludes()...)
+	defaultExcludes = state.SubtractPrefix(defaultExcludes, env.LocalCfg.UnexcludeIPs)
 	excluded = append(excluded, defaultExcludes...)
 	excluded = append(excluded, env.LocalCfg.ExcludeIPs...)
 	excluded = append(excluded,
-		netip.MustParsePrefix("127.0.0.0/8"),
-		netip.MustParsePrefix("169.254.0.0/16"),
 		netip.MustParsePrefix("172.16.0.0/12"),
 		netip.MustParsePrefix("192.168.0.0/16"),
-		netip.MustParsePrefix("224.0.0.0/4"),
-		netip.MustParsePrefix("255.255.255.255/32"),
 	)
 
 	for _, router := range env.CentralCfg.Routers {

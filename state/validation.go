@@ -96,6 +96,7 @@ func AddrToPrefix(addr netip.Addr) netip.Prefix {
 
 func CentralConfigValidator(cfg *CentralCfg) error {
 	nodes := make([]string, 0)
+	addressOwners := make(map[netip.Addr]NodeId)
 	for _, node := range cfg.Routers {
 		err := NameValidator(string(node.Id))
 		if err != nil {
@@ -105,6 +106,12 @@ func CentralConfigValidator(cfg *CentralCfg) error {
 			return fmt.Errorf("duplicate router id %s", node.Id)
 		}
 		nodes = append(nodes, string(node.Id))
+		for _, addr := range node.Addresses {
+			if owner, ok := addressOwners[addr]; ok {
+				return fmt.Errorf("duplicate address %s used by router %s and node %s", addr, node.Id, owner)
+			}
+			addressOwners[addr] = node.Id
+		}
 	}
 	for _, node := range cfg.Clients {
 		err := NameValidator(string(node.Id))
@@ -115,6 +122,12 @@ func CentralConfigValidator(cfg *CentralCfg) error {
 			return fmt.Errorf("duplicate client id %s", node.Id)
 		}
 		nodes = append(nodes, string(node.Id))
+		for _, addr := range node.Addresses {
+			if owner, ok := addressOwners[addr]; ok {
+				return fmt.Errorf("duplicate address %s used by client %s and node %s", addr, node.Id, owner)
+			}
+			addressOwners[addr] = node.Id
+		}
 	}
 	_, err := ParseGraph(cfg.Graph, nodes)
 	if err != nil {

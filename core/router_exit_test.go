@@ -44,6 +44,8 @@ func TestComputeSysRouteTable_ExitNodeDefaultsAreLocalCaptureOnly(t *testing.T) 
 	assert.NotContains(t, routes, netip.MustParsePrefix("0.0.0.0/0"))
 	for _, route := range routes {
 		assert.False(t, route.Contains(netip.MustParseAddr("192.168.1.1")), route.String())
+		assert.False(t, route.Contains(netip.MustParseAddr("224.0.0.251")), route.String())
+		assert.False(t, route.Contains(netip.MustParseAddr("169.254.1.1")), route.String())
 	}
 }
 

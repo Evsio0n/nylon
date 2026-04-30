@@ -209,7 +209,8 @@ func (r *NylonRouter) ComputeSysRouteTable() []netip.Prefix {
 		}
 	}
 
-	defaultExcludes := r.CentralCfg.ExcludeIPs
+	defaultExcludes := append([]netip.Prefix{}, r.CentralCfg.ExcludeIPs...)
+	defaultExcludes = append(defaultExcludes, state.DefaultLocalIPv4Excludes()...)
 	for p := range selectedSelf {
 		defaultExcludes = append(defaultExcludes, p)
 	}

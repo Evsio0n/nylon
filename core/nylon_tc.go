@@ -55,6 +55,9 @@ func (n *Nylon) InstallTC(s *state.State) {
 			if ok {
 				return device.TcPass, nil // overlay routes keep normal routing semantics.
 			}
+			if state.IsDefaultLocalExcludedAddr(packet.GetDst()) {
+				return device.TcDrop, nil
+			}
 			entry, ok = r.ForwardEntryToNode(s.LocalCfg.ExitNode)
 			if !ok || entry.Peer == nil {
 				if state.DBG_trace_tc {
@@ -260,11 +263,14 @@ func (n *Nylon) handleExitPacket(s *state.State, packet *device.TCElement) (devi
 	if !s.LocalCfg.AdvertiseExitNode {
 		return device.TcDrop, errors.New("local node is not advertising exit service")
 	}
+	if !n.exitOriginArrivedFromExpectedPeer(s, ep.origin, packet.FromPeer) {
+		return device.TcDrop, fmt.Errorf("exit packet origin %s did not arrive from expected peer", ep.origin)
+	}
 	src, err := packetSrc(ep.inner)
 	if err != nil {
 		return device.TcDrop, err
 	}
-	if !nodeOwnsAddr(&s.CentralCfg, ep.origin, src) {
+	if !nodeOwnsExitSourceAddr(&s.CentralCfg, ep.origin, src) {
 		return device.TcDrop, fmt.Errorf("source %s is not owned by origin node %s", src, ep.origin)
 	}
 	dst, err := packetDst(ep.inner)
@@ -278,6 +284,18 @@ func (n *Nylon) handleExitPacket(s *state.State, packet *device.TCElement) (devi
 	packet.Packet = packet.Packet[:len(ep.inner)]
 	packet.ParsePacket()
 	return device.TcBounce, nil
+}
+
+func (n *Nylon) exitOriginArrivedFromExpectedPeer(s *state.State, origin state.NodeId, fromPeer *device.Peer) bool {
+	if fromPeer == nil {
+		return false
+	}
+	r := Get[*NylonRouter](s)
+	entry, ok := r.ForwardEntryToNode(origin)
+	if !ok || entry.Peer == nil {
+		return false
+	}
+	return fromPeer.GetPublicKey() == entry.Peer.GetPublicKey()
 }
 
 func packetSrc(packet []byte) (netip.Addr, error) {
@@ -316,37 +334,14 @@ func packetAddr(packet []byte, src bool) (netip.Addr, error) {
 	}
 }
 
-func nodeOwnsAddr(cfg *state.CentralCfg, node state.NodeId, addr netip.Addr) bool {
+func nodeOwnsExitSourceAddr(cfg *state.CentralCfg, node state.NodeId, addr netip.Addr) bool {
 	n := cfg.TryGetNode(node)
 	if n == nil {
 		return false
 	}
-	for _, prefix := range n.Prefixes {
-		if prefix.GetPrefix().Contains(addr) {
-			return true
-		}
-	}
 	for _, nodeAddr := range n.Addresses {
 		if nodeAddr == addr {
 			return true
-		}
-	}
-	if cfg.IsRouter(node) {
-		for _, peer := range cfg.GetPeers(node) {
-			if !cfg.IsClient(peer) {
-				continue
-			}
-			client := cfg.GetClient(peer)
-			for _, prefix := range client.Prefixes {
-				if prefix.GetPrefix().Contains(addr) {
-					return true
-				}
-			}
-			for _, nodeAddr := range client.Addresses {
-				if nodeAddr == addr {
-					return true
-				}
-			}
 		}
 	}
 	return false
