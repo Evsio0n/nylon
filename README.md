@@ -1,119 +1,48 @@
 <div align="center">
-    <img src="docs/assets/banner.svg" width=500 height=250>
+    <img src="docs/assets/banner.svg" width=500 height=250 alt="nylon - a self-healing mesh network built on WireGuard">
+
+[![Join our Discord](https://img.shields.io/discord/1499576745916104795?logo=discord&style=for-the-badge)](https://discord.gg/987gqqPGqr)
+[![Docs](https://img.shields.io/badge/docs-nylon.jq.ax-blue?style=for-the-badge)](https://nylon.jq.ax)
+
 </div>
+
+---
 
 # nylon
 
-Nylon is a [Resilient Overlay Network](https://dl.acm.org/doi/10.1145/502034.502048) built from WireGuard, designed to be performant, secure, reliable, and most importantly, easy to use.
+Nylon is a self-healing WireGuard mesh that routes around failures. If a link goes down, nylon reroutes traffic through the next-best path in seconds. No manual intervention, no central coordination servers, just like how a real network should be :)
 
-<details>
+Under the hood, nylon implements the [Babel routing protocol (RFC 8966)](https://datatracker.ietf.org/doc/html/rfc8966) on top of a [modified wireguard-go](https://github.com/encodeous/nylon/tree/main/polyamide), using measured latency as the routing metric. 
 
-<summary>What is a Resilient Overlay Network?</summary>
+Nylon targets under 10 seconds of convergence time after a link failure, as you can see in the demo below.
 
-A Resilient Overlay Network (RON) is an architecture that allows distributed applications to detect and recover from path outages and periods of degraded performance. It is an application-level overlay built on top of the existing Internet infrastructure, and it can be used to improve the reliability and performance of applications by routing traffic through intermediate nodes in the overlay network.
-
-</details>
-
-<details>
-
-<summary>Technical Overview</summary>
-
-Nylon is the integration of the Babel routing protocol with Polyamide (an advanced fork of WireGuard-go that enables routing).
-
-### Polyamide
-
-Polyamide is a fork of WireGuard-go that offers two notable features which enable dynamic routing:
-- **Code-Defined Packet Manipulation and Redirection**: Polyamide can be configured to forward packets between its peers, and manipulate packets in transit (e.g decrementing the TTL). This is achieved completely in user-space without the need for modifying kernel routing tables.
-- **Multi-endpoint Support**: Polyamide can maintain multiple endpoints for a single peer, allowing the control plane to dynamically select the best endpoint for a peer, and to send control messages over multiple physical links.
-
-### Routing
-
-Nylon closely implements the [Babel](https://datatracker.ietf.org/doc/html/rfc8966) routing protocol, a distance-vector routing protocol that is robust and efficient in both wireless mesh networks and wired networks. (However, nylon is not compatible with existing Babel implementations due to fundamental differences) The main implementation can be found in [core/router_algo.go](core/router_algo.go).
-
-Here are some key points about nylon's routing protocol:
-- Nylon uses in-band control messages to exchange routing information between nodes. These messages are sent over the same WireGuard tunnels used for data traffic, ensuring that routing information is not leaked. This is achieved by using Polyamide's code-defined packet manipulation to generate a pseudo "IPv8" header (as defined by `NyProtoId` in [polyamide/device/traffic_manip.go](polyamide/device/traffic_manip.go).
-- Nylon maintains backwards-compatibility with vanilla WireGuard clients by treating them as leaf nodes that do not participate in routing. These "passive" nodes must attach to a "gateway" (nylon) node that advertises their presence on the network.
-- Nylon uses a history-based hysteresis function to prevent frequent route switching. This is particularly important in overlay networks where the underlying physical network may be unstable (as defined in [state/endpoint.go](state/endpoint.go)).
-
-</details>
+![Demo](docs/assets/demo.gif)
 
 ### Main Features
-- **Dynamic Routing**: nylon does not require all nodes to be reachable from each other, unlike mesh-based VPN projects (e.g Tailscale, Nebula, ZeroTier and Innernet)
-- **Ease of Deployment**: nylon runs on a single UDP port (`57175`), is distributed by a single statically-linked binary, and is auto configured by a single<sup>*1*</sup> configuration file.
-- **WireGuard Backwards Compatibility**: you can use your existing WireGuard clients to connect to a nylon network, with reduced functionality. Useful for mobile clients.
+- **Multi-hop Routing**: traffic flows through the lowest-latency path across your mesh. Unlike Tailscale, Nebula, or ZeroTier, nodes don't need to be directly reachable from each other. Nylon forwards through intermediate hops automatically.
+- **No Coordination Server**: no SaaS dependency, no single control-plane. Nodes exchange routes directly over the same WireGuard tunnel that carries your data.
+- **Single Binary, Single Port**: one statically-linked binary, one UDP port (`57175`), one YAML config. That's it.
+- **WireGuard Client Compatibility**: connect stock WireGuard clients (iOS, Android, Windows) to the mesh with zero extra software. Mobile clients roam between gateways seamlessly.
 
-<sup>*<sup>1</sup>Each node does have a very minimal configuration to store its private key, and node-level config. This is a one-time setup and never needs to change.*</sup>
+## Getting Started
 
-# Getting Started
+Download the latest release binary from the [releases page](https://github.com/encodeous/nylon/releases), then head to the [docs](https://nylon.jq.ax) for setup instructions.
 
-You can download the latest release binary from the [releases page](https://github.com/encodeous/nylon/releases).
+> **[Read the full documentation at nylon.jq.ax](https://nylon.jq.ax)**
+> includes configuration reference, guides for connecting WireGuard clients, port forwarding, and comparisons with Tailscale/Nebula.
 
 Sample systemd service and launchctl plist files can be found under the `examples` directory.
 
-For setup instructions and an example network, please refer to the [example/README.md](example/README.md).
-
 > [!NOTE]
-> - The Linux and macOS verions are well tested, but the Windows client currently has issues. I recommend using [WireGuard for Windows](https://www.wireguard.com/install/) and connecting to a Linux/macOS machine as a passive client.
-> - Nylon is still early stage software, and has not received any security audits. Feel free to report bugs and suggest features via GitHub issues. If there is any security concerns, [contact me directly](https://jiaqi.ch/).
+> **Stability:** I daily-drive nylon on Linux and macOS. The routing protocol has an [extensive test suite](https://github.com/encodeous/nylon/blob/main/core/router_test.go) and integration tests with simulated network conditions. The config format may still change between releases.
+>
+> **Security:** Nylon does not modify WireGuard's cryptographic code. All nylon control traffic (route updates, probes) is sent inside the encrypted WireGuard tunnel. For security concerns, [contact me directly](https://jiaqi.ch/).
+>
+> **Windows:** The Windows TUN interface has known issues. For now, I recommend connecting Windows machines as [passive WireGuard clients](/guides/wg-clients) via a Linux/macOS gateway.
+>
+> Bugs and feature requests welcome via [GitHub issues](https://github.com/encodeous/nylon/issues).
 
-## Conceptual Overview
-
-In this section, we will go over some basic concepts of how nylon works, and see how it can recover from network failures.
-
-Here, we have a network of 5 nodes, visualized as the following graph:
-
-```mermaid
-graph LR
-    vps --- |2| charlie
-    vps --- |2| alice
-    eve --- |1| bob
-    vps --- |5| eve
-    alice --- |1| bob
-```
-
-*the number on the edges represent some network metric, nylon will use latency.*
-
-> [!NOTE]
-> Notice that the network does not need to be fully connected for nylon function. Each nylon node is capable of forwarding packets to its neighbours (can also be disabled in config). As long as some path exists, routing can happen.
-
-For our toy example, if we observe from node `alice`, our packet forwarding graph will look like this:
-
-```mermaid
-graph LR
-    vps --> |2| charlie
-    alice --> |2| vps
-    bob --> |1| eve
-    alice --> |1| bob
-```
-
-Packets sent from Alice will follow this graph to each of the destination nodes, nylon will route packets through the path of least metric.
-
-### Fault recovery
-
-What happens if one of our links go down?
-
-For example, we will disconnect `alice` and `bob`:
-
-```mermaid
-graph LR
-    vps --- |2| charlie
-    vps --- |2| alice
-    eve --- |1| bob
-    vps --- |5| eve
-    alice -.- bob
-```
-
-After a few moments, the network will automatically reconfigure itself. If we observe from `alice` again, our forwarding graph will look like:
-
-```mermaid
-graph LR
-    vps --> |2| charlie
-    alice --> |2| vps
-    vps --> |5| eve
-    eve --> |1| bob
-```
-
-Happy Networking!
+---
 
 Built with sweat and tears (thankfully no blood)
 

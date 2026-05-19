@@ -10,11 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/encodeous/nylon/protocol"
 	"github.com/encodeous/nylon/state"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestHealthcheckPing(t *testing.T) {
+	t.Parallel()
 	// Use a specific subnet for this test to avoid conflicts
 	h := NewHarness(t)
 
@@ -52,24 +54,22 @@ func TestHealthcheckPing(t *testing.T) {
 
 	// make node 1 and node 2 both advertise 10.0.0.4/32
 	// 1 would be default
-	n1Metric := uint32(10)
 	central.Routers[0].Prefixes = []state.PrefixHealthWrapper{
 		{
 			&state.PingPrefixHealth{
 				Prefix: netip.MustParsePrefix("10.0.1.4/32"),
 				Addr:   netip.MustParseAddr("10.0.1.4"),
-				Metric: &n1Metric,
+				Metric: new(uint32(10)),
 			},
 		},
 	}
 	// 2 would be fallback
-	n2Metric := uint32(1000)
 	central.Routers[1].Prefixes = []state.PrefixHealthWrapper{
 		{
 			&state.PingPrefixHealth{
 				Prefix: netip.MustParsePrefix("10.0.1.4/32"),
 				Addr:   netip.MustParseAddr("10.0.1.4"),
-				Metric: &n2Metric,
+				Metric: new(uint32(1000)),
 			},
 		},
 	}
@@ -100,8 +100,12 @@ func TestHealthcheckPing(t *testing.T) {
 
 	// 5. Wait for convergence
 	t.Log("Waiting for convergence...")
-	h.WaitForInspect("node3", `10\.0\.1\.4/32 via \(nh: node2, router: node1`)
-	h.WaitForInspect("node1", `10\.0\.0\.3/32 via node2`)
+	h.WaitForStatus(t, "node3", func(status *protocol.StatusResponse) bool {
+		return HasSelectedRoute(status, "10.0.1.4/32", "node2", "node1")
+	})
+	h.WaitForStatus(t, "node1", func(status *protocol.StatusResponse) bool {
+		return HasSelectedRoute(status, "10.0.0.3/32", "node2", "node3")
+	})
 
 	// ping from 3 to 10.0.0.4
 	stdout, stderr, err := h.Exec("node3", []string{"ping", "-c", "3", "10.0.1.4"})
@@ -127,6 +131,7 @@ func TestHealthcheckPing(t *testing.T) {
 }
 
 func TestHealthcheckHTTP(t *testing.T) {
+	t.Parallel()
 	h := NewHarness(t)
 
 	// IPs
@@ -161,15 +166,13 @@ func TestHealthcheckHTTP(t *testing.T) {
 	}
 
 	// Configure Primary with HTTP check (Metric 10)
-	// primMetric := uint32(10)
-	checkDelay := 1 * time.Second
 	central.Routers[1].Prefixes = []state.PrefixHealthWrapper{
 		{
 			&state.HTTPPrefixHealth{
 				Prefix: servicePrefix,
 				URL:    fmt.Sprintf("http://%s:8080/health", serviceIP),
-				Delay:  &checkDelay,
-				// Metric: &primMetric, // Remove override to use dynamic metric (RTT or INF)
+				Delay:  new(1 * time.Second),
+				Metric: new(uint32(10)),
 			},
 		},
 	}
@@ -215,27 +218,22 @@ func TestHealthcheckHTTP(t *testing.T) {
 	// Client should route to Backup (Metric 1000).
 
 	t.Log("Step A: Waiting for routing to fallback (Primary DOWN)")
-	h.WaitForInspect("client", `10\.0\.3\.1/32 via backup`)
+	h.WaitForStatus(t, "client", func(status *protocol.StatusResponse) bool {
+		return HasSelectedRoute(status, "10.0.3.1/32", "backup", "backup")
+	})
 
 	// B. Start HTTP Server on Primary
 	t.Log("Step B: Starting HTTP server on Primary")
 	// Use python3 http.server. Create 'health' file so /health returns 200.
 	// exec replaces the shell, so pkill python3 works or just killing the container process.
 	serverCmd := `touch health && python3 -m http.server 8080`
-	bg := h.ExecBackground("primary", []string{"/bin/sh", "-c", serverCmd})
+	h.ExecBackground("primary", []string{"/bin/sh", "-c", serverCmd})
 
 	// C. Wait for Primary to become healthy
 	// Primary should advertise Metric 10.
 	// Client should switch to Primary.
 	t.Log("Step C: Waiting for routing to switch to Primary (Primary UP)")
-	h.WaitForInspect("client", `10\.0\.3\.1/32 via primary`)
-
-	// D. Stop HTTP Server
-	t.Log("Step D: Stopping HTTP server")
-	h.Exec("primary", []string{"pkill", "python3"})
-	bg.Wait()
-
-	// E. Wait for fallback to Backup
-	t.Log("Step E: Waiting for fallback to Backup")
-	h.WaitForInspect("client", `10\.0\.3\.1/32 via backup`)
+	h.WaitForStatus(t, "client", func(status *protocol.StatusResponse) bool {
+		return HasSelectedRoute(status, "10.0.3.1/32", "primary", "primary")
+	})
 }

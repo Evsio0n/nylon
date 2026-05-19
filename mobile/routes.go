@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
-	"reflect"
 	"sort"
 	"time"
 
@@ -24,16 +23,16 @@ type MobileTunnelRoutes struct {
 // GetTunnelRoutes returns NetworkExtension-ready IPv4 route policy for iOS.
 func (n *NylonMobile) GetTunnelRoutes() string {
 	n.mu.Lock()
-	st := n.state
+	engine := n.nylon
 	n.mu.Unlock()
 
-	if st == nil || st.Env == nil {
+	if engine == nil {
 		return marshalTunnelRoutes(MobileTunnelRoutes{})
 	}
 
 	result := make(chan MobileTunnelRoutes, 1)
-	st.Env.Dispatch(func(s *state.State) error {
-		result <- BuildTunnelRoutes(s)
+	engine.Dispatch(func() error {
+		result <- BuildTunnelRoutes(engine)
 		return nil
 	})
 
@@ -50,62 +49,50 @@ func marshalTunnelRoutes(routes MobileTunnelRoutes) string {
 	return string(data)
 }
 
-func BuildTunnelRoutes(s *state.State) MobileTunnelRoutes {
-	if s == nil || s.Env == nil {
+func BuildTunnelRoutes(n *core.Nylon) MobileTunnelRoutes {
+	if n == nil {
 		return MobileTunnelRoutes{}
 	}
 
 	included := make([]netip.Prefix, 0)
-	if s.ExitNode != "" {
+	if n.LocalCfg.ExitNode != "" {
 		included = append(included, netip.MustParsePrefix("0.0.0.0/0"))
-	} else if router := getRouter(s); router != nil {
-		included = append(included, router.ComputeSysRouteTable()...)
+	} else {
+		included = append(included, n.ComputeSysRouteTable()...)
 	}
 
-	excluded := buildIPv4Excludes(s.Env)
+	excluded := buildIPv4Excludes(n)
 	return MobileTunnelRoutes{
 		IncludedRoutes: prefixStrings(filterIPv4Prefixes(included)),
 		ExcludedRoutes: prefixStrings(excluded),
 		IPv6Enabled:    false,
-		ExitNode:       string(s.ExitNode),
+		ExitNode:       string(n.LocalCfg.ExitNode),
 	}
 }
 
-func getRouter(s *state.State) *core.NylonRouter {
-	if s == nil || s.Modules == nil {
-		return nil
-	}
-	module, ok := s.Modules[reflect.TypeFor[*core.NylonRouter]().String()]
-	if !ok {
-		return nil
-	}
-	router, _ := module.(*core.NylonRouter)
-	return router
-}
-
-func buildIPv4Excludes(env *state.Env) []netip.Prefix {
+func buildIPv4Excludes(n *core.Nylon) []netip.Prefix {
 	excluded := make([]netip.Prefix, 0)
-	defaultExcludes := append([]netip.Prefix{}, env.CentralCfg.ExcludeIPs...)
+	defaultExcludes := append([]netip.Prefix{}, n.CentralCfg.ExcludeIPs...)
 	defaultExcludes = append(defaultExcludes, state.DefaultLocalIPv4Excludes()...)
-	defaultExcludes = state.SubtractPrefix(defaultExcludes, env.LocalCfg.UnexcludeIPs)
+	defaultExcludes = state.SubtractPrefix(defaultExcludes, n.LocalCfg.UnexcludeIPs)
 	excluded = append(excluded, defaultExcludes...)
-	excluded = append(excluded, env.LocalCfg.ExcludeIPs...)
+	excluded = append(excluded, n.LocalCfg.ExcludeIPs...)
 	excluded = append(excluded,
 		netip.MustParsePrefix("172.16.0.0/12"),
 		netip.MustParsePrefix("192.168.0.0/16"),
 	)
 
-	for _, router := range env.CentralCfg.Routers {
+	for _, router := range n.CentralCfg.Routers {
 		for _, endpoint := range router.Endpoints {
 			excluded = append(excluded, resolveEndpointIPv4(endpoint)...)
 		}
 	}
 
-	if env.LocalCfg.Dist != nil {
-		excluded = append(excluded, resolveURLHostIPv4(env.LocalCfg.Dist.Url)...)
+	if n.LocalCfg.Dist != nil {
+		excluded = append(excluded, resolveURLHostIPv4(n.LocalCfg.Dist.Url)...)
 	}
 
-	for _, resolver := range env.LocalCfg.DnsResolvers {
+	for _, resolver := range n.LocalCfg.DnsResolvers {
 		if addrPort, err := netip.ParseAddrPort(resolver); err == nil {
 			excluded = append(excluded, addrToIPv4Prefix(addrPort.Addr())...)
 		}

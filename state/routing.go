@@ -36,6 +36,7 @@ type Advertisement struct {
 	ExpiryFn      func()
 }
 type RouterState struct {
+	*RouterTunables
 	Id         NodeId
 	SelfSeqno  map[netip.Prefix]uint16
 	Routes     map[netip.Prefix]SelRoute
@@ -75,6 +76,13 @@ type Neighbour struct {
 type FD struct {
 	Seqno  uint16
 	Metric uint32
+}
+
+func (fd FD) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.Uint64("seqno", uint64(fd.Seqno)),
+		slog.Uint64("metric", uint64(fd.Metric)),
+	)
 }
 
 type PubRoute struct {

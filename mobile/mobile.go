@@ -1,7 +1,6 @@
 package mobile
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +30,7 @@ import (
 type NylonMobile struct {
 	mu      sync.Mutex
 	running bool
-	state   *state.State
+	nylon   *core.Nylon
 }
 
 type trafficStats struct {
@@ -80,7 +79,7 @@ func (n *NylonMobile) Start(centralYAML, nodeYAML string, tunFd int32) error {
 		if localCfg.Dist == nil {
 			return errors.New("central config is empty and node config has no dist config")
 		}
-		cfg, err := core.FetchConfig(localCfg.Dist.Url, localCfg.Dist.Key)
+		cfg, err := core.FetchConfig(localCfg.Dist.Url, localCfg.Dist.Key, state.DefaultRouterTunables().MaxConfigSize)
 		if err != nil {
 			return fmt.Errorf("failed to fetch central config from distribution: %w", err)
 		}
@@ -93,7 +92,7 @@ func (n *NylonMobile) Start(centralYAML, nodeYAML string, tunFd int32) error {
 	if err := state.CentralConfigValidator(&centralCfg); err != nil {
 		return fmt.Errorf("invalid central config: %w", err)
 	}
-	if err := state.NodeConfigValidator(&localCfg); err != nil {
+	if err := state.NodeConfigValidator(&centralCfg, &localCfg); err != nil {
 		return fmt.Errorf("invalid node config: %w", err)
 	}
 
@@ -120,7 +119,6 @@ func (n *NylonMobile) Start(centralYAML, nodeYAML string, tunFd int32) error {
 	}
 
 	initResult := make(chan error, 1)
-	var st *state.State
 
 	n.mu.Lock()
 	n.running = true
@@ -133,7 +131,7 @@ func (n *NylonMobile) Start(centralYAML, nodeYAML string, tunFd int32) error {
 
 				n.mu.Lock()
 				n.running = false
-				n.state = nil
+				n.nylon = nil
 				n.mu.Unlock()
 
 				select {
@@ -143,11 +141,28 @@ func (n *NylonMobile) Start(centralYAML, nodeYAML string, tunFd int32) error {
 			}
 		}()
 
-		_, err := core.Start(centralCfg, localCfg, parseLogLevel(localCfg.LogLevel), "", aux, &st)
-		// Start only returns when the engine stops or init fails.
+		engine, err := core.NewNylon(
+			centralCfg,
+			localCfg,
+			parseLogLevel(localCfg.LogLevel),
+			"",
+			aux,
+			state.DefaultNylonOptions(),
+			nil,
+		)
+		if err == nil {
+			n.mu.Lock()
+			n.nylon = engine
+			n.mu.Unlock()
+			select {
+			case initResult <- nil:
+			default:
+			}
+			err = engine.Start()
+		}
 		n.mu.Lock()
 		n.running = false
-		n.state = nil
+		n.nylon = nil
 		n.mu.Unlock()
 
 		if err != nil {
@@ -159,28 +174,14 @@ func (n *NylonMobile) Start(centralYAML, nodeYAML string, tunFd int32) error {
 		}
 	}()
 
-	// Wait for either init error, the main loop start signal, or timeout.
-	// core.Start blocks while the engine is running, so a fixed timeout here
-	// would unnecessarily slow down iOS VPN connection establishment.
+	// Wait for initialization, not for the engine main loop to exit.
 	timeout := time.After(10 * time.Second)
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
 	for {
 		select {
 		case err := <-initResult:
 			return err
-		case <-ticker.C:
-			if st != nil && st.Env != nil && st.Started.Load() {
-				n.mu.Lock()
-				n.state = st
-				n.mu.Unlock()
-				return nil
-			}
 		case <-timeout:
-			n.mu.Lock()
-			n.state = st
-			n.mu.Unlock()
-			return nil
+			return errors.New("timed out initializing nylon engine")
 		}
 	}
 }
@@ -190,10 +191,10 @@ func (n *NylonMobile) Stop() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	if !n.running || n.state == nil || n.state.Env == nil {
+	if !n.running || n.nylon == nil {
 		return
 	}
-	n.state.Env.Cancel(context.Canceled)
+	n.nylon.Stop()
 	n.running = false
 }
 
@@ -208,21 +209,16 @@ func (n *NylonMobile) IsRunning() bool {
 // Called from Swift to configure NEPacketTunnelNetworkSettings.
 func (n *NylonMobile) GetSystemRoutes() string {
 	n.mu.Lock()
-	st := n.state
+	engine := n.nylon
 	n.mu.Unlock()
 
-	if st == nil || st.Env == nil {
+	if engine == nil {
 		return "[]"
 	}
 
 	result := make(chan []string, 1)
-	st.Env.Dispatch(func(s *state.State) error {
-		router := core.Get[*core.NylonRouter](s)
-		if router == nil {
-			result <- []string{}
-			return nil
-		}
-		sysRoutes := router.ComputeSysRouteTable()
+	engine.Dispatch(func() error {
+		sysRoutes := engine.ComputeSysRouteTable()
 		routes := make([]string, 0, len(sysRoutes))
 		for _, p := range sysRoutes {
 			routes = append(routes, p.String())
@@ -243,14 +239,14 @@ func (n *NylonMobile) GetSystemRoutes() string {
 // GetSelfAddresses returns the node's own mesh addresses as a JSON string array.
 func (n *NylonMobile) GetSelfAddresses() string {
 	n.mu.Lock()
-	env := n.state.Env
+	engine := n.nylon
 	n.mu.Unlock()
 
-	if env == nil {
+	if engine == nil {
 		return "[]"
 	}
 
-	node := env.TryGetNode(env.LocalCfg.Id)
+	node := engine.TryGetNode(engine.LocalCfg.Id)
 	if node == nil {
 		return "[]"
 	}
@@ -273,23 +269,22 @@ func (n *NylonMobile) GetSelfAddresses() string {
 // GetTrafficStats returns aggregate WireGuard peer transfer counters.
 func (n *NylonMobile) GetTrafficStats() string {
 	n.mu.Lock()
-	st := n.state
+	engine := n.nylon
 	n.mu.Unlock()
 
-	if st == nil || st.Env == nil {
+	if engine == nil {
 		data, _ := json.Marshal(trafficStats{})
 		return string(data)
 	}
 
 	result := make(chan trafficStats, 1)
-	st.Env.Dispatch(func(s *state.State) error {
-		nylon := core.Get[*core.Nylon](s)
-		if nylon == nil || nylon.Device == nil {
+	engine.Dispatch(func() error {
+		if engine.Device == nil {
 			result <- trafficStats{}
 			return nil
 		}
 
-		uapi, err := nylon.Device.IpcGet()
+		uapi, err := engine.Device.IpcGet()
 		if err != nil {
 			result <- trafficStats{}
 			return nil

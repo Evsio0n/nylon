@@ -24,30 +24,30 @@ func TestNameValidator_Invalid(t *testing.T) {
 }
 
 func TestNodeConfigValidator_DnsResolver(t *testing.T) {
-	assert.NoError(t, NodeConfigValidator(&LocalCfg{
+	assert.NoError(t, NodeConfigValidator(nil, &LocalCfg{
 		Id:           "valid-node",
 		Port:         5,
 		Key:          [32]byte{1},
 		DnsResolvers: []string{"1.1.1.1:53"},
 	}))
-	assert.NoError(t, NodeConfigValidator(&LocalCfg{
+	assert.NoError(t, NodeConfigValidator(nil, &LocalCfg{
 		Id:   "valid-node",
 		Port: 5,
 		Key:  [32]byte{1},
 	}))
-	assert.Error(t, NodeConfigValidator(&LocalCfg{
+	assert.Error(t, NodeConfigValidator(nil, &LocalCfg{
 		Id:           "invalid-node",
 		Port:         5,
 		Key:          [32]byte{1},
 		DnsResolvers: []string{"google.com"},
 	}))
-	assert.Error(t, NodeConfigValidator(&LocalCfg{
+	assert.Error(t, NodeConfigValidator(nil, &LocalCfg{
 		Id:           "invalid-node",
 		Port:         5,
 		Key:          [32]byte{1},
 		DnsResolvers: []string{"google.com:53"},
 	}))
-	assert.Error(t, NodeConfigValidator(&LocalCfg{
+	assert.Error(t, NodeConfigValidator(nil, &LocalCfg{
 		Id:           "invalid-node",
 		Port:         5,
 		Key:          [32]byte{1},
@@ -65,11 +65,11 @@ func TestNodeConfigValidator_ExitNodeChainRejected(t *testing.T) {
 	cfg := base
 	cfg.AdvertiseExitNode = true
 	cfg.ExitNode = "other-node"
-	assert.Error(t, NodeConfigValidator(&cfg))
+	assert.Error(t, NodeConfigValidator(nil, &cfg))
 
 	cfg = base
 	cfg.ExitNode = cfg.Id
-	assert.Error(t, NodeConfigValidator(&cfg))
+	assert.Error(t, NodeConfigValidator(nil, &cfg))
 }
 
 func TestCentralConfigValidatorRejectsDuplicateAddresses(t *testing.T) {
@@ -116,6 +116,36 @@ func TestCentralConfigValidator_OverlappingPrefix(t *testing.T) {
 					},
 				},
 			},
+		},
+	}
+	assert.NoError(t, CentralConfigValidator(cfg))
+}
+
+func TestCentralConfigValidator_PassiveClientNonStaticPrefix(t *testing.T) {
+	cfg := &CentralCfg{
+		Clients: []ClientCfg{
+			{
+				NodeCfg: NodeCfg{
+					Id: "client1",
+					Prefixes: []PrefixHealthWrapper{
+						{
+							PrefixHealth: &PingPrefixHealth{
+								Prefix: netip.MustParsePrefix("10.0.0.0/24"),
+								Addr:   netip.MustParseAddr("10.0.0.1"),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	assert.Error(t, CentralConfigValidator(cfg))
+	assert.Contains(t, CentralConfigValidator(cfg).Error(), "passive clients may not advertise non-static prefixes")
+
+	cfg.Clients[0].Prefixes[0] = PrefixHealthWrapper{
+		PrefixHealth: &StaticPrefixHealth{
+			Prefix: netip.MustParsePrefix("10.0.0.0/24"),
+			Metric: 0,
 		},
 	}
 	assert.NoError(t, CentralConfigValidator(cfg))

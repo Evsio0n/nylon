@@ -21,11 +21,10 @@ const (
 
 // polyamide traffic control for nylon
 
-func (n *Nylon) InstallTC(s *state.State) {
-	r := Get[*NylonRouter](s)
-	t := Get[*NylonTrace](s)
+func (n *Nylon) InstallTC() {
+	t := n.Trace
 
-	if state.DBG_trace_tc {
+	if n.DBG_trace_tc {
 		n.Device.InstallFilter(func(dev *device.Device, packet *device.TCElement) (device.TCAction, error) {
 			if packet.Validate() { // make sure it's an IP packet
 				peer := packet.FromPeer
@@ -46,43 +45,43 @@ func (n *Nylon) InstallTC(s *state.State) {
 		})
 	}
 
-	if s.LocalCfg.ExitNode != "" {
+	if n.LocalCfg.ExitNode != "" {
 		n.Device.InstallFilter(func(dev *device.Device, packet *device.TCElement) (device.TCAction, error) {
 			if packet.Incoming() || !packet.Validate() || (packet.GetIPVersion() != 4 && packet.GetIPVersion() != 6) {
 				return device.TcPass, nil
 			}
-			entry, ok := r.ForwardTable.Lookup(packet.GetDst())
+			entry, ok := n.router.ForwardTable.Load().Lookup(packet.GetDst())
 			if ok {
 				return device.TcPass, nil // overlay routes keep normal routing semantics.
 			}
 			if state.IsDefaultLocalExcludedAddr(packet.GetDst()) {
 				return device.TcDrop, nil
 			}
-			entry, ok = r.ForwardEntryToNode(s.LocalCfg.ExitNode)
+			entry, ok = n.ForwardEntryToNode(n.LocalCfg.ExitNode)
 			if !ok || entry.Peer == nil {
-				if state.DBG_trace_tc {
-					t.Submit(fmt.Sprintf("ExitDrop: %v -> %v, exit %s, reason no_route\n", packet.GetSrc(), packet.GetDst(), s.LocalCfg.ExitNode))
+				if n.DBG_trace_tc {
+					t.Submit(fmt.Sprintf("ExitDrop: %v -> %v, exit %s, reason no_route\n", packet.GetSrc(), packet.GetDst(), n.LocalCfg.ExitNode))
 				}
 				return device.TcDrop, nil
 			}
 			src, dst := packet.GetSrc(), packet.GetDst()
-			if err := n.wrapExitPacket(packet, s.LocalCfg.ExitNode, s.Id); err != nil {
-				if state.DBG_trace_tc {
-					t.Submit(fmt.Sprintf("ExitDrop: %v -> %v, exit %s, reason %v\n", src, dst, s.LocalCfg.ExitNode, err))
+			if err := n.wrapExitPacket(packet, n.LocalCfg.ExitNode, n.LocalCfg.Id); err != nil {
+				if n.DBG_trace_tc {
+					t.Submit(fmt.Sprintf("ExitDrop: %v -> %v, exit %s, reason %v\n", src, dst, n.LocalCfg.ExitNode, err))
 				}
 				return device.TcDrop, nil
 			}
 			packet.ToPeer = entry.Peer
 			packet.Priority = device.TcMediumPriority
-			if state.DBG_trace_tc {
-				t.Submit(fmt.Sprintf("ExitEncap: %v -> %v, exit %s via %s\n", src, dst, s.LocalCfg.ExitNode, entry.Nh))
+			if n.DBG_trace_tc {
+				t.Submit(fmt.Sprintf("ExitEncap: %v -> %v, exit %s via %s\n", src, dst, n.LocalCfg.ExitNode, entry.Nh))
 			}
 			return device.TcForward, nil
 		})
 	}
 
 	// bounce back packets if using system routing
-	if n.env.UseSystemRouting {
+	if n.UseSystemRouting {
 		n.Device.InstallFilter(func(dev *device.Device, packet *device.TCElement) (device.TCAction, error) {
 			if packet.Incoming() {
 				// bounce incoming packets
@@ -93,10 +92,13 @@ func (n *Nylon) InstallTC(s *state.State) {
 		})
 		// forward only outgoing packets based on the routing table
 		n.Device.InstallFilter(func(dev *device.Device, packet *device.TCElement) (device.TCAction, error) {
-			entry, ok := r.ForwardTable.Lookup(packet.GetDst())
+			entry, ok := n.router.ForwardTable.Load().Lookup(packet.GetDst())
 			if ok && !packet.Incoming() {
+				if entry.Blackhole {
+					return device.TcDrop, nil
+				}
 				packet.ToPeer = entry.Peer
-				if state.DBG_trace_tc {
+				if n.DBG_trace_tc {
 					t.Submit(fmt.Sprintf("Fwd packet: %v -> %v, via %s\n", packet.GetSrc(), packet.GetDst(), entry.Nh))
 				}
 				return device.TcForward, nil
@@ -106,10 +108,13 @@ func (n *Nylon) InstallTC(s *state.State) {
 	} else {
 		// forward packets based on the routing table
 		n.Device.InstallFilter(func(dev *device.Device, packet *device.TCElement) (device.TCAction, error) {
-			entry, ok := r.ForwardTable.Lookup(packet.GetDst())
+			entry, ok := n.router.ForwardTable.Load().Lookup(packet.GetDst())
 			if ok {
+				if entry.Blackhole {
+					return device.TcDrop, nil
+				}
 				packet.ToPeer = entry.Peer
-				if state.DBG_trace_tc {
+				if n.DBG_trace_tc {
 					t.Submit(fmt.Sprintf("Fwd packet: %v -> %v, via %s\n", packet.GetSrc(), packet.GetDst(), entry.Nh))
 				}
 				return device.TcForward, nil
@@ -127,7 +132,7 @@ func (n *Nylon) InstallTC(s *state.State) {
 					packet.DecrementTTL()
 				}
 				if ttl == 0 {
-					if state.DBG_trace_tc {
+					if n.DBG_trace_tc {
 						t.Submit(fmt.Sprintf("TTL Expired: %v -> %v\n", packet.GetSrc(), packet.GetDst()))
 					}
 					return device.TcBounce, nil
@@ -141,10 +146,10 @@ func (n *Nylon) InstallTC(s *state.State) {
 
 	// bounce back packets destined for the current node
 	n.Device.InstallFilter(func(dev *device.Device, packet *device.TCElement) (device.TCAction, error) {
-		entry, ok := r.ExitTable.Lookup(packet.GetDst())
+		entry, ok := n.router.ExitTable.Load().Lookup(packet.GetDst())
 		// we should only accept packets destined to us, but not our passive clients
-		if ok && entry.Nh == s.Id {
-			if state.DBG_trace_tc {
+		if ok && entry.Nh == n.LocalCfg.Id {
+			if n.DBG_trace_tc {
 				t.Submit(fmt.Sprintf("Exit: %v -> %v\n", packet.GetSrc(), packet.GetDst()))
 			}
 			//dev.Log.Verbosef("BounceCur packet: %v -> %v", packet.GetSrc(), packet.GetDst())
@@ -169,8 +174,8 @@ func (n *Nylon) InstallTC(s *state.State) {
 		if !packet.Incoming() || packet.GetIPVersion() != NyExitProtoId {
 			return device.TcPass, nil
 		}
-		action, err := n.handleExitPacket(s, packet)
-		if err != nil && state.DBG_trace_tc {
+		action, err := n.handleExitPacket(packet)
+		if err != nil && n.DBG_trace_tc {
 			t.Submit(fmt.Sprintf("ExitDrop: reason %v\n", err))
 		}
 		return action, err
@@ -235,9 +240,8 @@ func parseExitPacket(packet *device.TCElement) (exitPacket, error) {
 	}, nil
 }
 
-func (n *Nylon) handleExitPacket(s *state.State, packet *device.TCElement) (device.TCAction, error) {
-	r := Get[*NylonRouter](s)
-	t := Get[*NylonTrace](s)
+func (n *Nylon) handleExitPacket(packet *device.TCElement) (device.TCAction, error) {
+	t := n.Trace
 	ep, err := parseExitPacket(packet)
 	if err != nil {
 		return device.TcDrop, err
@@ -246,38 +250,38 @@ func (n *Nylon) handleExitPacket(s *state.State, packet *device.TCElement) (devi
 		return device.TcDrop, errors.New("exit packet hop limit exceeded")
 	}
 
-	if ep.exit != s.Id {
-		entry, ok := r.ForwardEntryToNode(ep.exit)
+	if ep.exit != n.LocalCfg.Id {
+		entry, ok := n.ForwardEntryToNode(ep.exit)
 		if !ok || entry.Peer == nil {
 			return device.TcDrop, fmt.Errorf("no route to exit node %s", ep.exit)
 		}
 		packet.Payload()[0]--
 		packet.ToPeer = entry.Peer
 		packet.Priority = device.TcMediumPriority
-		if state.DBG_trace_tc {
+		if n.DBG_trace_tc {
 			t.Submit(fmt.Sprintf("ExitTransit: origin %s exit %s via %s\n", ep.origin, ep.exit, entry.Nh))
 		}
 		return device.TcForward, nil
 	}
 
-	if !s.LocalCfg.AdvertiseExitNode {
+	if !n.LocalCfg.AdvertiseExitNode {
 		return device.TcDrop, errors.New("local node is not advertising exit service")
 	}
-	if !n.exitOriginArrivedFromExpectedPeer(s, ep.origin, packet.FromPeer) {
+	if !n.exitOriginArrivedFromExpectedPeer(ep.origin, packet.FromPeer) {
 		return device.TcDrop, fmt.Errorf("exit packet origin %s did not arrive from expected peer", ep.origin)
 	}
 	src, err := packetSrc(ep.inner)
 	if err != nil {
 		return device.TcDrop, err
 	}
-	if !nodeOwnsExitSourceAddr(&s.CentralCfg, ep.origin, src) {
+	if !nodeOwnsExitSourceAddr(&n.CentralCfg, ep.origin, src) {
 		return device.TcDrop, fmt.Errorf("source %s is not owned by origin node %s", src, ep.origin)
 	}
 	dst, err := packetDst(ep.inner)
 	if err != nil {
 		return device.TcDrop, err
 	}
-	if state.DBG_trace_tc {
+	if n.DBG_trace_tc {
 		t.Submit(fmt.Sprintf("ExitDecap: origin %s %s -> %s\n", ep.origin, src, dst))
 	}
 	copy(packet.Packet[:len(ep.inner)], ep.inner)
@@ -286,12 +290,11 @@ func (n *Nylon) handleExitPacket(s *state.State, packet *device.TCElement) (devi
 	return device.TcBounce, nil
 }
 
-func (n *Nylon) exitOriginArrivedFromExpectedPeer(s *state.State, origin state.NodeId, fromPeer *device.Peer) bool {
+func (n *Nylon) exitOriginArrivedFromExpectedPeer(origin state.NodeId, fromPeer *device.Peer) bool {
 	if fromPeer == nil {
 		return false
 	}
-	r := Get[*NylonRouter](s)
-	entry, ok := r.ForwardEntryToNode(origin)
+	entry, ok := n.ForwardEntryToNode(origin)
 	if !ok || entry.Peer == nil {
 		return false
 	}
@@ -373,46 +376,49 @@ func (n *Nylon) SendNylonBundle(pkt *protocol.TransportBundle, endpoint conn.End
 }
 
 func (n *Nylon) handleNylonPacket(packet []byte, endpoint conn.Endpoint, peer *device.Peer) {
+	// we need to be careful here, since this function is called on the dataplane
 	bundle := &protocol.TransportBundle{}
 	err := proto.Unmarshal(packet, bundle)
 	if err != nil {
 		// log skipped message
-		n.env.Log.Debug("Failed to unmarshal packet", "err", err)
+		n.Log.Debug("Failed to unmarshal packet", "err", err)
 		return
 	}
 
-	e := n.env
-
-	neigh := e.FindNodeBy(state.NyPublicKey(peer.GetPublicKey()))
-	if neigh == nil {
+	nt := n.PeerMap.Load()
+	if nt == nil {
+		return // not loaded yet
+	}
+	neigh, ok := (*nt)[state.NyPublicKey(peer.GetPublicKey())]
+	if !ok {
 		// this should not be possible
 		panic("impossible state, peer added, but not a node in the network")
-		return
 	}
 
 	defer func() {
 		err := recover()
 		if err != nil {
-			n.env.Log.Error("panic while handling poly socket: %v", err)
+			n.Log.Error("panic while handling poly socket", "err", err)
 		}
 	}()
 
 	for _, pkt := range bundle.Packets {
 		switch pkt.Type.(type) {
 		case *protocol.Ny_SeqnoRequestOp:
-			e.Dispatch(func(s *state.State) error {
-				return routerHandleSeqnoRequest(s, *neigh, pkt.GetSeqnoRequestOp())
+			n.Dispatch(func() error {
+				return n.routerHandleSeqnoRequest(neigh, pkt.GetSeqnoRequestOp())
 			})
 		case *protocol.Ny_RouteOp:
-			e.Dispatch(func(s *state.State) error {
-				return routerHandleRouteUpdate(s, *neigh, pkt.GetRouteOp())
+			n.Dispatch(func() error {
+				return n.routerHandleRouteUpdate(neigh, pkt.GetRouteOp())
 			})
 		case *protocol.Ny_AckRetractOp:
-			e.Dispatch(func(s *state.State) error {
-				return routerHandleAckRetract(s, *neigh, pkt.GetAckRetractOp())
+			n.Dispatch(func() error {
+				return n.routerHandleAckRetract(neigh, pkt.GetAckRetractOp())
 			})
 		case *protocol.Ny_ProbeOp:
-			handleProbe(n, pkt.GetProbeOp(), endpoint, peer, *neigh)
+			// we don't want to wait for dispatch before responding to this packet
+			handleProbe(n, pkt.GetProbeOp(), endpoint, peer, neigh)
 		}
 	}
 }

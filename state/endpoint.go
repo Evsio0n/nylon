@@ -65,7 +65,7 @@ func (ep *DynamicEndpoint) Parse() (host string, port uint16, err error) {
 	}
 }
 
-func (ep *DynamicEndpoint) Refresh() (netip.AddrPort, error) {
+func (ep *DynamicEndpoint) Refresh(resolveExpiry time.Duration) (netip.AddrPort, error) {
 	// 1. Try to parse as AddrPort directly
 	if ap, err := netip.ParseAddrPort(ep.Value); err == nil {
 		return ap, nil
@@ -73,7 +73,7 @@ func (ep *DynamicEndpoint) Refresh() (netip.AddrPort, error) {
 
 	ep.rw.RLock()
 	// if this endpoint is down, we will refresh every EndpointResolveDelay
-	if time.Now().Sub(ep.lastUpdate) < EndpointResolveExpiry && ep.lastValue != (netip.AddrPort{}) {
+	if time.Since(ep.lastUpdate) < resolveExpiry && ep.lastValue != (netip.AddrPort{}) {
 		ep.rw.RUnlock()
 		return ep.lastValue, nil
 	}
@@ -153,6 +153,8 @@ func (ep *DynamicEndpoint) MarshalYAML() (interface{}, error) {
 }
 
 type NylonEndpoint struct {
+	sync.RWMutex  // this mutex is for rtt smoothing and metric calculation
+	t             *RouterTunables
 	history       []time.Duration
 	histSort      []time.Duration
 	dirty         bool
@@ -188,19 +190,30 @@ func (n *Neighbour) BestEndpoint() Endpoint {
 	var best Endpoint
 
 	for _, link := range n.Eps {
-		if best == nil || link.Metric() < best.Metric() || (link.IsActive() && !best.IsActive()) {
+		if !link.IsActive() {
+			continue
+		}
+		if best == nil || link.Metric() < best.Metric() {
 			best = link
 		}
 	}
 	return best
 }
 
+func (u *NylonEndpoint) isActiveUnlocked() bool {
+	return time.Since(u.lastHeardBack) <= u.t.LinkDeadThreshold
+}
+
 func (u *NylonEndpoint) IsActive() bool {
-	return time.Now().Sub(u.lastHeardBack) <= LinkDeadThreshold
+	u.RLock()
+	defer u.RUnlock()
+	return u.isActiveUnlocked()
 }
 
 func (u *NylonEndpoint) Renew() {
-	if !u.IsActive() {
+	u.Lock()
+	defer u.Unlock()
+	if !u.isActiveUnlocked() {
 		u.history = u.history[:0]
 		u.expRTT = math.Inf(1)
 		u.dirty = true
@@ -212,8 +225,9 @@ func (u *NylonEndpoint) IsAlive() bool {
 	return u.IsActive() || !u.remoteInit // we never gc endpoints that we have in our config
 }
 
-func NewEndpoint(endpoint *DynamicEndpoint, remoteInit bool, wgEndpoint conn.Endpoint) *NylonEndpoint {
+func NewEndpoint(endpoint *DynamicEndpoint, remoteInit bool, wgEndpoint conn.Endpoint, t *RouterTunables) *NylonEndpoint {
 	return &NylonEndpoint{
+		t:          t,
 		remoteInit: remoteInit,
 		WgEndpoint: wgEndpoint,
 		DynEP:      endpoint,
@@ -223,7 +237,9 @@ func NewEndpoint(endpoint *DynamicEndpoint, remoteInit bool, wgEndpoint conn.End
 }
 
 func (u *NylonEndpoint) calcR() (time.Duration, time.Duration, time.Duration) {
-	if len(u.history) < MinimumConfidenceWindow {
+	u.Lock()
+	defer u.Unlock()
+	if len(u.history) < u.t.MinimumConfidenceWindow {
 		return time.Second * 1, time.Second * 1, time.Second * 1
 	}
 	if u.dirty {
@@ -232,8 +248,8 @@ func (u *NylonEndpoint) calcR() (time.Duration, time.Duration, time.Duration) {
 		u.dirty = false
 	}
 	le := len(u.histSort)
-	low := u.histSort[int(float64(le)*OutlierPercentage)]
-	high := u.histSort[int(float64(le)*(1-OutlierPercentage))]
+	low := u.histSort[int(float64(le)*u.t.OutlierPercentage)]
+	high := u.histSort[int(float64(le)*(1-u.t.OutlierPercentage))]
 	med := u.histSort[le/2]
 	return low, med, high
 }
@@ -262,6 +278,8 @@ func (u *NylonEndpoint) StabilizedPing() time.Duration {
 }
 
 func (u *NylonEndpoint) UpdatePing(ping time.Duration) {
+	u.Lock()
+	defer u.Unlock()
 	// sometimes our system clock is not fast enough, so ping is 0
 	if ping == 0 {
 		ping = time.Microsecond * 100
@@ -273,8 +291,8 @@ func (u *NylonEndpoint) UpdatePing(ping time.Duration) {
 		u.expRTT = f
 	}
 	u.expRTT = alpha*f + (1-alpha)*u.expRTT
-	u.history = append(u.history, u.FilteredPing())
-	if len(u.history) > WindowSamples {
+	u.history = append(u.history, time.Duration(int64(u.expRTT)))
+	if len(u.history) > u.t.WindowSamples {
 		u.history = u.history[1:]
 	}
 	u.dirty = true

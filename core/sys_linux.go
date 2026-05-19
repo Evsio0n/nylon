@@ -11,7 +11,7 @@ import (
 	"github.com/encodeous/nylon/state"
 )
 
-func InitUAPI(e *state.Env, itfName string) (net.Listener, error) {
+func InitUAPI(logger *slog.Logger, itfName string) (net.Listener, error) {
 	fileUAPI, err := ipc.UAPIOpen(itfName)
 
 	uapi, err := ipc.UAPIListen(itfName, fileUAPI)
@@ -43,7 +43,11 @@ func CleanupInterface(logger *slog.Logger, ifName string, fwmark uint32) {
 }
 
 func ConfigureAlias(logger *slog.Logger, ifName string, addr netip.Addr) error {
-	return Exec(logger, "ip", "addr", "add", addr.String(), "dev", ifName)
+	return Exec(logger, "ip", "addr", "add", state.AddrToPrefix(addr).String(), "dev", ifName)
+}
+
+func RemoveAlias(logger *slog.Logger, ifName string, addr netip.Addr) error {
+	return Exec(logger, "ip", "addr", "del", state.AddrToPrefix(addr).String(), "dev", ifName)
 }
 
 func ConfigureRoute(logger *slog.Logger, dev tun.Device, itfName string, route netip.Prefix, fwmark uint32) error {

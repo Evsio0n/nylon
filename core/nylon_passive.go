@@ -6,16 +6,16 @@ import (
 	"github.com/encodeous/nylon/state"
 )
 
-func (n *Nylon) initPassiveClient(s *state.State) error {
-	s.Env.RepeatTask(scanPassivePeers, state.ProbeDelay)
+func (n *Nylon) initPassiveClient() error {
+	n.RepeatTask(func() error {
+		return scanPassivePeers(n)
+	}, n.ProbeDelay)
 	return nil
 }
 
-func scanPassivePeers(s *state.State) error {
-	n := Get[*Nylon](s)
-	r := Get[*NylonRouter](s)
+func scanPassivePeers(n *Nylon) error {
 	for _, peer := range n.Device.GetPeers() {
-		nid := s.FindNodeBy(state.NyPublicKey(peer.GetPublicKey()))
+		nid := n.FindNodeBy(state.NyPublicKey(peer.GetPublicKey()))
 
 		if nid != nil {
 			// check if we are the only node that is advertising this passive client, if so, we can apply the following optimization
@@ -24,11 +24,11 @@ func scanPassivePeers(s *state.State) error {
 			// If this device switches to another nylon node, that node will start advertising the client, and we will stop holding the route
 
 			hasOtherAdvertisers := false
-			ncfg := s.GetNode(*nid)
+			ncfg := n.GetNode(*nid)
 			for _, prefix := range ncfg.Prefixes {
-				for _, neigh := range s.Neighbours {
+				for _, neigh := range n.RouterState.Neighbours {
 					for _, route := range neigh.Routes {
-						if route.Prefix == prefix.GetPrefix() && route.NodeId != s.Id && route.FD.Metric != state.INF {
+						if route.Prefix == prefix.GetPrefix() && route.NodeId != n.LocalCfg.Id && route.FD.Metric != state.INF {
 							hasOtherAdvertisers = true
 							goto foundAdvertiser
 						}
@@ -39,13 +39,13 @@ func scanPassivePeers(s *state.State) error {
 
 			// TODO: we could make this expire after a longer period of time, like 24h. However, this would require our passive client to wait for the full route propagation time after 24 hours. (Might cause unexpected interruptions)
 
-			recentlyUpdated := time.Now().Sub(peer.LastReceivedPacket()) < state.ClientDeadThreshold
-			if s.IsClient(*nid) {
+			recentlyUpdated := time.Since(peer.LastReceivedPacket()) < n.ClientDeadThreshold
+			if n.IsClient(*nid) {
 				// we have a passive client
 				for _, newPrefix := range ncfg.Prefixes {
-					recentlyAdvertised := r.hasRecentlyAdvertised(newPrefix.GetPrefix())
+					recentlyAdvertised := n.hasRecentlyAdvertised(newPrefix.GetPrefix())
 					if recentlyUpdated || !hasOtherAdvertisers && recentlyAdvertised {
-						r.updatePassiveClient(s, newPrefix, *nid, !recentlyUpdated)
+						n.updatePassiveClient(newPrefix, *nid, !recentlyUpdated)
 					}
 				}
 			}

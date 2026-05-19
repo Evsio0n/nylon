@@ -16,15 +16,15 @@ func NeighContainsFunc(s *state.RouterState, f func(neigh state.NodeId, route st
 	return false
 }
 
-func (r *NylonRouter) ForwardEntryToNode(node state.NodeId) (RouteTableEntry, bool) {
-	if node == r.Id {
-		return RouteTableEntry{Nh: r.Id}, true
+func (n *Nylon) ForwardEntryToNode(node state.NodeId) (RouteTableEntry, bool) {
+	if node == n.LocalCfg.Id {
+		return RouteTableEntry{Nh: n.LocalCfg.Id}, true
 	}
 
 	var best state.SelRoute
 	found := false
-	for _, route := range r.Routes {
-		if route.NodeId != node || route.Nh == r.Id || route.Metric == state.INF {
+	for _, route := range n.RouterState.Routes {
+		if route.NodeId != node || route.Nh == n.LocalCfg.Id || route.Metric == state.INF {
 			continue
 		}
 		if !found || route.Metric < best.Metric {
@@ -36,8 +36,7 @@ func (r *NylonRouter) ForwardEntryToNode(node state.NodeId) (RouteTableEntry, bo
 		return RouteTableEntry{}, false
 	}
 
-	n := Get[*Nylon](r.State)
-	peer := n.Device.LookupPeer(device.NoisePublicKey(r.GetNode(best.Nh).PubKey))
+	peer := n.Device.LookupPeer(device.NoisePublicKey(n.GetNode(best.Nh).PubKey))
 	if peer == nil {
 		return RouteTableEntry{}, false
 	}

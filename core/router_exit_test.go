@@ -9,24 +9,22 @@ import (
 )
 
 func TestComputeSysRouteTable_ExitNodeDefaultsAreLocalCaptureOnly(t *testing.T) {
-	r := &NylonRouter{
-		State: &state.State{
-			Env: &state.Env{
-				LocalCfg: state.LocalCfg{Id: "node-a"},
-			},
+	r := &Nylon{
+		ConfigState: state.ConfigState{
+			LocalCfg: state.LocalCfg{Id: "node-a"},
 		},
-	}
-	r.RouterState = &state.RouterState{
-		Id: "node-a",
-		Routes: map[netip.Prefix]state.SelRoute{
-			netip.MustParsePrefix("10.0.0.2/32"): {
-				PubRoute: state.PubRoute{
-					Source: state.Source{
-						NodeId: "node-b",
-						Prefix: netip.MustParsePrefix("10.0.0.2/32"),
+		RouterState: &state.RouterState{
+			Id: "node-a",
+			Routes: map[netip.Prefix]state.SelRoute{
+				netip.MustParsePrefix("10.0.0.2/32"): {
+					PubRoute: state.PubRoute{
+						Source: state.Source{
+							NodeId: "node-b",
+							Prefix: netip.MustParsePrefix("10.0.0.2/32"),
+						},
 					},
+					Nh: "node-b",
 				},
-				Nh: "node-b",
 			},
 		},
 	}

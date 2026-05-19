@@ -11,26 +11,29 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"sync"
 	"testing"
 	"time"
 	"unsafe"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/encodeous/nylon/protocol"
 	"github.com/encodeous/nylon/state"
 	"github.com/goccy/go-yaml"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 	"github.com/testcontainers/testcontainers-go"
 	tcnetwork "github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
-const (
+var (
 	ImageName   = "nylon-debug:latest"
 	AppPort     = "57175/udp"
 	WaitTimeout = 2 * time.Minute
+	networkMu   sync.Mutex
 )
 
 type Harness struct {
@@ -67,10 +70,16 @@ func NewHarness(t *testing.T) *Harness {
 		rootDir = parent
 	}
 
-	subnet, gateway := GlobalNetworkAllocator.Allocate()
+	networkMu.Lock()
+	defer networkMu.Unlock()
+
+	subnet, gateway, err := AllocateDockerSubnet(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Logf("Allocated subnet: %s, gateway: %s", subnet, gateway)
 
-	// Create network with specific subnet
+	// Create network with a Docker-checked non-overlapping explicit subnet.
 	newNetwork, err := tcnetwork.New(ctx,
 		tcnetwork.WithAttachable(),
 		tcnetwork.WithDriver("bridge"),
@@ -78,14 +87,15 @@ func NewHarness(t *testing.T) *Harness {
 			Driver: "default",
 			Config: []network.IPAMConfig{
 				{
-					Subnet:  subnet,
-					Gateway: gateway,
+					Subnet:  netip.MustParsePrefix(subnet),
+					Gateway: netip.MustParseAddr(gateway),
 				},
 			},
 		}))
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	h := &Harness{
 		t:          t,
 		ctx:        ctx,
@@ -155,7 +165,7 @@ func (h *Harness) StartNode(name string, ip string, centralConfigPath, nodeConfi
 			if ip != "" {
 				if s, ok := m[h.Network.Name]; ok {
 					s.IPAMConfig = &network.EndpointIPAMConfig{
-						IPv4Address: ip,
+						IPv4Address: netip.MustParseAddr(ip),
 					}
 				}
 			}
@@ -186,20 +196,53 @@ func (h *Harness) WaitForLog(nodeName string, pattern string) {
 func (h *Harness) WaitForMatch(nodeName string, pattern string) {
 	h.waitFor(nodeName, SourceStdout, pattern, true)
 }
-func (h *Harness) WaitForInspect(nodeName string, pattern string) {
+func (h *Harness) WaitForStatus(t *testing.T, nodeName string, check func(*protocol.StatusResponse) bool) {
+	t.Helper()
 	start := time.Now()
-	re := regexp.MustCompile(pattern)
 	for {
 		if time.Since(start) > WaitTimeout {
-			stdout, _, _ := h.Exec(nodeName, []string{"nylon", "inspect", "nylon0"})
-			h.t.Fatalf("timed out waiting for inspect pattern %q in node %s. Current inspect:\n%s", pattern, nodeName, stdout)
+			stdout, _, _ := h.Exec(nodeName, []string{"nylon", "status", "-i", "nylon0", "--json"})
+			h.t.Fatalf("timed out waiting for status predicate in node %s. Current status:\n%s", nodeName, stdout)
 		}
-		stdout, _, err := h.Exec(nodeName, []string{"nylon", "inspect", "nylon0"})
-		if err == nil && re.MatchString(stdout) {
+		status, err := h.ReadStatus(nodeName)
+		if err == nil && check(status) {
 			return
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+}
+
+func (h *Harness) ReadStatus(nodeName string) (*protocol.StatusResponse, error) {
+	stdout, _, err := h.Exec(nodeName, []string{"nylon", "status", "-i", "nylon0", "--json"})
+	if err != nil {
+		return nil, err
+	}
+	resp := &protocol.IpcResponse{}
+	if err := protojson.Unmarshal([]byte(stdout), resp); err != nil {
+		return nil, err
+	}
+	return resp.GetStatus(), nil
+}
+
+func HasSelectedRoute(status *protocol.StatusResponse, prefix, nh, router string) bool {
+	for _, route := range status.GetRoutes().GetSelected() {
+		source := route.GetPubRoute().GetSource()
+		if source.GetPrefix() == prefix && route.GetNh() == nh && source.GetNodeId() == router {
+			return true
+		}
+	}
+	return false
+}
+
+func HasResolvedEndpoint(status *protocol.StatusResponse, address, resolved string) bool {
+	for _, neigh := range status.GetNeighbours() {
+		for _, ep := range neigh.GetEndpoints() {
+			if ep.GetAddress() == address && ep.GetResolved() == resolved {
+				return true
+			}
+		}
+	}
+	return false
 }
 func (h *Harness) WaitForTrace(nodeName string, pattern string) {
 	h.waitFor(nodeName, SourceTrace, pattern, false)
@@ -229,7 +272,8 @@ type managerWriter struct {
 
 func (w *managerWriter) Write(p []byte) (n int, err error) {
 	content := StripAnsi(string(p))
-	fmt.Printf("[%s:%s] %s", w.node, w.source, content)
+	ts := time.Since(w.manager.start).Truncate(time.Millisecond)
+	fmt.Printf("[+%s][%s:%s] %s", ts, w.node, w.source, content)
 	w.manager.Accept(w.node, w.source, content)
 	return len(p), nil
 }
@@ -251,11 +295,11 @@ func (h *Harness) StartTrace(nodeName string) {
 
 	go func() {
 		time.Sleep(time.Second)
-		execOptions := container.ExecOptions{
-			Cmd:          []string{"nylon", "inspect", "nylon0", "--trace"},
+		execOptions := client.ExecCreateOptions{
+			Cmd:          []string{"nylon", "trace", "-i", "nylon0"},
 			AttachStdout: true,
 			AttachStderr: true,
-			Tty:          false,
+			TTY:          false,
 		}
 
 		docker := cont.(*testcontainers.DockerContainer)
@@ -264,12 +308,12 @@ func (h *Harness) StartTrace(nodeName string) {
 		y := GetUnexportedField(v.Elem().FieldByName("provider")).(*testcontainers.DockerProvider)
 		cli := y.Client()
 
-		execIDResp, err := cli.ContainerExecCreate(h.ctx, cont.GetContainerID(), execOptions)
+		execIDResp, err := cli.ExecCreate(h.ctx, cont.GetContainerID(), execOptions)
 		if err != nil {
 			h.t.Fatalf("Failed to start trace for %s: %v", nodeName, err)
 		}
 
-		resp, err := cli.ContainerExecAttach(h.ctx, execIDResp.ID, container.ExecAttachOptions{})
+		resp, err := cli.ExecAttach(h.ctx, execIDResp.ID, client.ExecAttachOptions{})
 		if err != nil {
 			h.t.Fatalf("Failed to start trace for %s: %v", nodeName, err)
 		}
@@ -434,7 +478,7 @@ func (h *Harness) StartDNS(name string, ip string, corefile string, zones map[st
 			if ip != "" {
 				if s, ok := m[h.Network.Name]; ok {
 					s.IPAMConfig = &network.EndpointIPAMConfig{
-						IPv4Address: ip,
+						IPv4Address: netip.MustParseAddr(ip),
 					}
 				}
 			}

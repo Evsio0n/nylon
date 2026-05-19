@@ -31,7 +31,7 @@ const (
 // ControlPlane is a NyModule that exposes a REST API + WebSocket
 // for inspecting and managing nylon mesh state.
 type ControlPlane struct {
-	env        *state.Env
+	n          *Nylon
 	server     *http.Server
 	meshServer *http.Server
 	trace      *NylonTrace
@@ -142,10 +142,9 @@ type APIResponse struct {
 	Message string `json:"message,omitempty"`
 }
 
-// --- ControlPlane NyModule implementation ---
-
-func (cp *ControlPlane) Init(s *state.State) error {
-	cp.env = s.Env
+func (cp *ControlPlane) Init(n *Nylon) error {
+	cp.n = n
+	cp.trace = n.Trace
 	cp.wsClients = wsClientSet{clients: make(map[*websocket.Conn]struct{})}
 
 	addr := defaultControlPlaneAddr
@@ -174,7 +173,7 @@ func (cp *ControlPlane) Init(s *state.State) error {
 	// Phase 3: Embedded Web UI (SPA)
 	uiSub, err := fs.Sub(uiFS, "ui")
 	if err != nil {
-		s.Log.Warn("control plane: failed to create UI subtree", "error", err)
+		n.Log.Warn("control plane: failed to create UI subtree", "error", err)
 	} else {
 		fileServer := http.FileServer(http.FS(uiSub))
 		mux.Handle("/ui/", http.StripPrefix("/ui/", fileServer))
@@ -189,7 +188,7 @@ func (cp *ControlPlane) Init(s *state.State) error {
 	// Listen on localhost
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		s.Log.Warn("control plane failed to bind, skipping", "addr", addr, "error", err)
+		n.Log.Warn("control plane failed to bind, skipping", "addr", addr, "error", err)
 		return nil // non-fatal: control plane is optional
 	}
 
@@ -201,27 +200,33 @@ func (cp *ControlPlane) Init(s *state.State) error {
 	}
 
 	go func() {
-		s.Log.Info("control plane listening", "addr", addr)
+		n.Log.Info("control plane listening", "addr", addr)
 		if err := cp.server.Serve(ln); err != nil && err != http.ErrServerClosed {
-			s.Log.Error("control plane server error", "error", err)
+			n.Log.Error("control plane server error", "error", err)
 		}
 	}()
 
 	// Also listen on mesh interface IP so other nodes can query our API
 	// Must be delayed because WG interface hasn't been created yet at Init time
-	go cp.listenMeshDelayed(s, handler)
+	go cp.listenMeshDelayed(n, handler)
 
 	return nil
 }
 
-func (cp *ControlPlane) Cleanup(s *state.State) error {
+func (cp *ControlPlane) Cleanup() error {
 	// Close all WebSocket clients first
 	cp.wsClients.closeAll()
 
 	if cp.server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return cp.server.Shutdown(ctx)
+		err := cp.server.Shutdown(ctx)
+		if cp.meshServer != nil {
+			if meshErr := cp.meshServer.Shutdown(ctx); err == nil {
+				err = meshErr
+			}
+		}
+		return err
 	}
 	return nil
 }
@@ -230,19 +235,19 @@ func (cp *ControlPlane) Cleanup(s *state.State) error {
 
 func (cp *ControlPlane) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp := StatusResponse{
-		NodeId:     string(cp.env.LocalCfg.Id),
-		IsRouter:   cp.env.IsRouter(cp.env.LocalCfg.Id),
-		IsExitNode: cp.env.LocalCfg.AdvertiseExitNode,
+		NodeId:     string(cp.n.LocalCfg.Id),
+		IsRouter:   cp.n.IsRouter(cp.n.LocalCfg.Id),
+		IsExitNode: cp.n.LocalCfg.AdvertiseExitNode,
 	}
 	writeJSON(w, resp)
 }
 
 func (cp *ControlPlane) handleNodes(w http.ResponseWriter, r *http.Request) {
 	nodes := make([]NodeInfo, 0)
-	for _, n := range cp.env.Routers {
+	for _, n := range cp.n.Routers {
 		nodes = append(nodes, nodeCfgToInfo(n.NodeCfg, true))
 	}
-	for _, n := range cp.env.Clients {
+	for _, n := range cp.n.Clients {
 		nodes = append(nodes, nodeCfgToInfo(n.NodeCfg, false))
 	}
 	writeJSON(w, nodes)
@@ -250,9 +255,9 @@ func (cp *ControlPlane) handleNodes(w http.ResponseWriter, r *http.Request) {
 
 func (cp *ControlPlane) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	result := make(chan []RouteInfo, 1)
-	cp.env.Dispatch(func(s *state.State) error {
-		routes := make([]RouteInfo, 0, len(s.Routes))
-		for prefix, route := range s.Routes {
+	cp.n.Dispatch(func() error {
+		routes := make([]RouteInfo, 0, len(cp.n.RouterState.Routes))
+		for prefix, route := range cp.n.RouterState.Routes {
 			ri := RouteInfo{
 				Prefix:   prefix.String(),
 				NextHop:  string(route.Nh),
@@ -282,9 +287,9 @@ func (cp *ControlPlane) handleRoutes(w http.ResponseWriter, r *http.Request) {
 
 func (cp *ControlPlane) handleNeighbours(w http.ResponseWriter, r *http.Request) {
 	result := make(chan []NeighbourInfo, 1)
-	cp.env.Dispatch(func(s *state.State) error {
-		neighbours := make([]NeighbourInfo, 0, len(s.Neighbours))
-		for _, n := range s.Neighbours {
+	cp.n.Dispatch(func() error {
+		neighbours := make([]NeighbourInfo, 0, len(cp.n.RouterState.Neighbours))
+		for _, n := range cp.n.RouterState.Neighbours {
 			ni := NeighbourInfo{
 				Id: string(n.Id),
 			}
@@ -331,9 +336,9 @@ func (cp *ControlPlane) handleNeighbours(w http.ResponseWriter, r *http.Request)
 
 func (cp *ControlPlane) handlePrefixes(w http.ResponseWriter, r *http.Request) {
 	result := make(chan []PrefixInfo, 1)
-	cp.env.Dispatch(func(s *state.State) error {
-		prefixes := make([]PrefixInfo, 0, len(s.Advertised))
-		for prefix, adv := range s.Advertised {
+	cp.n.Dispatch(func() error {
+		prefixes := make([]PrefixInfo, 0, len(cp.n.RouterState.Advertised))
+		for prefix, adv := range cp.n.RouterState.Advertised {
 			pi := PrefixInfo{
 				Prefix:   prefix.String(),
 				RouterId: string(adv.NodeId),
@@ -371,10 +376,9 @@ func (cp *ControlPlane) handlePrefixes(w http.ResponseWriter, r *http.Request) {
 
 func (cp *ControlPlane) handleForward(w http.ResponseWriter, r *http.Request) {
 	result := make(chan []ForwardEntry, 1)
-	cp.env.Dispatch(func(s *state.State) error {
-		router := Get[*NylonRouter](s)
+	cp.n.Dispatch(func() error {
 		entries := make([]ForwardEntry, 0)
-		for prefix, entry := range router.ForwardTable.All() {
+		for prefix, entry := range cp.n.router.ForwardTable.Load().All() {
 			entries = append(entries, ForwardEntry{
 				Prefix:  prefix.String(),
 				NextHop: string(entry.Nh),
@@ -397,9 +401,8 @@ func (cp *ControlPlane) handleForward(w http.ResponseWriter, r *http.Request) {
 
 func (cp *ControlPlane) handleSysRoutes(w http.ResponseWriter, r *http.Request) {
 	result := make(chan []string, 1)
-	cp.env.Dispatch(func(s *state.State) error {
-		router := Get[*NylonRouter](s)
-		sysRoutes := router.ComputeSysRouteTable()
+	cp.n.Dispatch(func() error {
+		sysRoutes := cp.n.ComputeSysRouteTable()
 		routes := make([]string, 0, len(sysRoutes))
 		for _, p := range sysRoutes {
 			routes = append(routes, p.String())
@@ -422,17 +425,8 @@ func (cp *ControlPlane) handleSysRoutes(w http.ResponseWriter, r *http.Request) 
 // handleReload triggers a config reload by setting Updating and cancelling the context.
 // The Bootstrap loop in entrypoint.go will re-read configs and restart.
 func (cp *ControlPlane) handleReload(w http.ResponseWriter, r *http.Request) {
-	if cp.env.Stopping.Load() {
-		writeError(w, http.StatusConflict, "node is shutting down")
-		return
-	}
-	if !cp.env.Updating.CompareAndSwap(false, true) {
-		writeError(w, http.StatusConflict, "reload already in progress")
-		return
-	}
-
-	cp.env.Log.Info("control plane: config reload triggered via API")
-	cp.env.Cancel(fmt.Errorf("config reload triggered via control plane API"))
+	cp.n.Log.Info("control plane: config reload triggered via API")
+	cp.n.Cancel(fmt.Errorf("config reload triggered via control plane API"))
 
 	writeJSON(w, APIResponse{
 		Success: true,
@@ -442,16 +436,10 @@ func (cp *ControlPlane) handleReload(w http.ResponseWriter, r *http.Request) {
 
 // handleFlushRoutes triggers a full route table update to all neighbours.
 func (cp *ControlPlane) handleFlushRoutes(w http.ResponseWriter, r *http.Request) {
-	if cp.env.Stopping.Load() {
-		writeError(w, http.StatusConflict, "node is shutting down")
-		return
-	}
-
 	result := make(chan string, 1)
-	cp.env.Dispatch(func(s *state.State) error {
-		router := Get[*NylonRouter](s)
-		FullTableUpdate(s.RouterState, router)
-		neighCount := len(router.IO)
+	cp.n.Dispatch(func() error {
+		FullTableUpdate(cp.n.RouterState, cp.n)
+		neighCount := len(cp.n.router.IO)
 		result <- fmt.Sprintf("flushed full route table to %d neighbours", neighCount)
 		return nil
 	})
@@ -470,14 +458,6 @@ func (cp *ControlPlane) handleFlushRoutes(w http.ResponseWriter, r *http.Request
 // --- Phase 2: WebSocket handler ---
 
 func (cp *ControlPlane) handleWebSocket(ws *websocket.Conn) {
-	// Resolve NylonTrace at first use (module may init after ControlPlane)
-	if cp.trace == nil {
-		cp.env.Dispatch(func(s *state.State) error {
-			cp.trace = Get[*NylonTrace](s)
-			return nil
-		})
-	}
-
 	cp.wsClients.add(ws)
 	defer func() {
 		cp.wsClients.remove(ws)
@@ -533,7 +513,7 @@ func (cp *ControlPlane) handleWebSocket(ws *websocket.Conn) {
 			}
 			cp.handleWSCommand(ws, cmd)
 
-		case <-cp.env.Context.Done():
+		case <-cp.n.Context.Done():
 			// Server shutting down
 			return
 		}
@@ -590,8 +570,8 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 
 // listenMeshDelayed waits for the WireGuard interface to come up, then binds
 // the control plane on the node's mesh prefix address.
-func (cp *ControlPlane) listenMeshDelayed(s *state.State, handler http.Handler) {
-	node := s.Env.TryGetNode(s.Env.LocalCfg.Id)
+func (cp *ControlPlane) listenMeshDelayed(n *Nylon, handler http.Handler) {
+	node := n.TryGetNode(n.LocalCfg.Id)
 	if node == nil {
 		return
 	}
@@ -619,7 +599,7 @@ func (cp *ControlPlane) listenMeshDelayed(s *state.State, handler http.Handler) 
 		time.Sleep(1 * time.Second)
 	}
 	if err != nil {
-		s.Log.Warn("control plane: mesh listener gave up", "addr", meshAddr, "error", err)
+		n.Log.Warn("control plane: mesh listener gave up", "addr", meshAddr, "error", err)
 		return
 	}
 
@@ -631,9 +611,9 @@ func (cp *ControlPlane) listenMeshDelayed(s *state.State, handler http.Handler) 
 	}
 	cp.meshServer = srv
 
-	s.Log.Info("control plane mesh listener started", "addr", meshAddr)
+	n.Log.Info("control plane mesh listener started", "addr", meshAddr)
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-		s.Log.Error("control plane mesh listener error", "error", err)
+		n.Log.Error("control plane mesh listener error", "error", err)
 	}
 }
 
@@ -681,13 +661,13 @@ func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
 	var allEdges []topoEdge
 	nodeMap := make(map[string]topoNode)
 
-	myID := string(cp.env.LocalCfg.Id)
+	myID := string(cp.n.LocalCfg.Id)
 
 	// Add self
 	nodeMap[myID] = topoNode{
 		ID:         myID,
-		IsRouter:   cp.env.IsRouter(state.NodeId(myID)),
-		IsExitNode: cp.env.LocalCfg.AdvertiseExitNode,
+		IsRouter:   cp.n.IsRouter(state.NodeId(myID)),
+		IsExitNode: cp.n.LocalCfg.AdvertiseExitNode,
 		IsSelf:     true,
 	}
 
@@ -697,9 +677,9 @@ func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
 		BestMetric uint32
 	}
 	neighResult := make(chan []ownNeigh, 1)
-	cp.env.Dispatch(func(s *state.State) error {
+	cp.n.Dispatch(func() error {
 		var list []ownNeigh
-		for _, n := range s.Neighbours {
+		for _, n := range cp.n.RouterState.Neighbours {
 			on := ownNeigh{Id: string(n.Id)}
 			best := n.BestEndpoint()
 			if best != nil {
@@ -721,7 +701,7 @@ func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
 
 	for _, nb := range ownNeighs {
 		if nb.BestMetric >= state.INF { // unreachable (Babel infinity)
-			nodeMap[nb.Id] = topoNode{ID: nb.Id, IsRouter: cp.env.IsRouter(state.NodeId(nb.Id))}
+			nodeMap[nb.Id] = topoNode{ID: nb.Id, IsRouter: cp.n.IsRouter(state.NodeId(nb.Id))}
 			continue
 		}
 		edgeKey := myID + "-" + nb.Id
@@ -729,7 +709,7 @@ func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
 			visited[edgeKey] = true
 			allEdges = append(allEdges, topoEdge{From: myID, To: nb.Id, Metric: nb.BestMetric})
 		}
-		nodeMap[nb.Id] = topoNode{ID: nb.Id, IsRouter: cp.env.IsRouter(state.NodeId(nb.Id))}
+		nodeMap[nb.Id] = topoNode{ID: nb.Id, IsRouter: cp.n.IsRouter(state.NodeId(nb.Id))}
 	}
 
 	// Query each known node's API via mesh network for their neighbour view
@@ -769,7 +749,7 @@ func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
 		for _, nb := range topo.Neighbours {
 			if nb.BestMetric >= state.INF { // unreachable
 				if _, exists := nodeMap[nb.ID]; !exists {
-					nodeMap[nb.ID] = topoNode{ID: nb.ID, IsRouter: cp.env.IsRouter(state.NodeId(nb.ID))}
+					nodeMap[nb.ID] = topoNode{ID: nb.ID, IsRouter: cp.n.IsRouter(state.NodeId(nb.ID))}
 				}
 				continue
 			}
@@ -781,7 +761,7 @@ func (cp *ControlPlane) handleTopology(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if _, exists := nodeMap[nb.ID]; !exists {
-				nodeMap[nb.ID] = topoNode{ID: nb.ID, IsRouter: cp.env.IsRouter(state.NodeId(nb.ID))}
+				nodeMap[nb.ID] = topoNode{ID: nb.ID, IsRouter: cp.n.IsRouter(state.NodeId(nb.ID))}
 			}
 
 			if !queried[nb.ID] {
@@ -861,7 +841,7 @@ func (cp *ControlPlane) queryNodeTopology(ctx context.Context, addr string) *nei
 
 // resolveNodeAddr returns the mesh IP:port for a given node ID.
 func (cp *ControlPlane) resolveNodeAddr(nodeId string) string {
-	node := cp.env.TryGetNode(state.NodeId(nodeId))
+	node := cp.n.TryGetNode(state.NodeId(nodeId))
 	if node == nil {
 		return ""
 	}

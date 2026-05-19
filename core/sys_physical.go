@@ -7,20 +7,19 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/encodeous/nylon/log"
 	"github.com/encodeous/nylon/polyamide/conn"
 	"github.com/encodeous/nylon/polyamide/device"
 	"github.com/encodeous/nylon/polyamide/tun"
-	"github.com/encodeous/nylon/state"
 )
 
-func NewWireGuardDevice(s *state.State, n *Nylon) (dev *device.Device, tunDevice tun.Device, realItf string, err error) {
-	itfName := s.InterfaceName // attempt to name the interface
+func NewWireGuardDevice(n *Nylon) (dev *device.Device, tunDevice tun.Device, realItf string, err error) {
+	itfName := n.InterfaceName
 
 	var tdev tun.Device
-	isMobile, _ := s.AuxConfig["isMobile"].(bool)
+	isMobile, _ := n.AuxConfig["isMobile"].(bool)
 
-	// Check for pre-created TUN device (mobile / NetworkExtension)
-	if preTUN, ok := s.AuxConfig["tunDevice"].(tun.Device); ok {
+	if preTUN, ok := n.AuxConfig["tunDevice"].(tun.Device); ok {
 		tdev = preTUN
 	} else {
 		if runtime.GOOS == "darwin" {
@@ -37,39 +36,38 @@ func NewWireGuardDevice(s *state.State, n *Nylon) (dev *device.Device, tunDevice
 		itfName = realInterfaceName
 	}
 
-	// setup WireGuard
+	wgLog := n.Log.With("module", log.ScopePolyamide)
+
 	dev = device.NewDevice(tdev, conn.NewDefaultBind(), &device.Logger{
 		Verbosef: func(format string, args ...any) {
-			if state.DBG_log_wireguard {
-				s.Log.Debug(fmt.Sprintf(format, args...))
+			if n.DBG_log_wireguard {
+				wgLog.Debug(fmt.Sprintf(format, args...))
 			}
 		},
 		Errorf: func(format string, args ...any) {
 			if strings.Contains(format, "Failed to send PolySock packets") {
 				return
 			}
-			s.Log.Error(fmt.Sprintf(format, args...))
+			wgLog.Error(fmt.Sprintf(format, args...))
 		},
 	})
 
-	// Apply mobile-specific WireGuard quirks
 	if isMobile {
 		dev.DisableSomeRoamingForBrokenMobileSemantics()
 	}
 
-	// start uapi for wg command (skip on mobile)
 	if !isMobile {
-		n.wgUapi, err = InitUAPI(s.Env, itfName)
+		n.wgUapi, err = InitUAPI(n.Log, itfName)
 		if err != nil {
 			return nil, nil, "", err
 		}
 
 		if n.wgUapi != nil {
 			go func() {
-				for s.Context.Err() == nil {
+				for n.Context.Err() == nil {
 					accept, err := n.wgUapi.Accept()
 					if err != nil {
-						s.Env.Log.Debug(err.Error())
+						n.Log.Debug(err.Error())
 						continue
 					}
 					go dev.IpcHandle(accept)
@@ -78,11 +76,11 @@ func NewWireGuardDevice(s *state.State, n *Nylon) (dev *device.Device, tunDevice
 		}
 	}
 
-	s.Log.Info("Created WireGuard interface", "name", itfName, "mobile", isMobile)
+	n.Log.Info("Created WireGuard interface", "name", itfName, "mobile", isMobile)
 	return dev, tdev, itfName, nil
 }
 
-func CleanupWireGuardDevice(s *state.State, n *Nylon) error {
+func CleanupWireGuardDevice(n *Nylon) error {
 	n.Device.Close()
 	if n.wgUapi != nil {
 		err := n.wgUapi.Close()

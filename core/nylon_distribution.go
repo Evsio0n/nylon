@@ -9,13 +9,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 
 	"github.com/encodeous/nylon/state"
 	"github.com/goccy/go-yaml"
 )
 
 // fetches and unbundles central config from url
-func FetchConfig(repoStr string, key state.NyPublicKey) (*state.CentralCfg, error) {
+func FetchConfig(repoStr string, key state.NyPublicKey, maxSize int64) (*state.CentralCfg, error) {
 	repo, err := url.Parse(repoStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse repo URL %s: %w", repoStr, err)
@@ -55,7 +56,7 @@ func FetchConfig(repoStr string, key state.NyPublicKey) (*state.CentralCfg, erro
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch %s: %w", repo.String(), err)
 		}
-		cfgBody, err = io.ReadAll(res.Body)
+		cfgBody, err = io.ReadAll(io.LimitReader(res.Body, maxSize))
 		if err != nil {
 			res.Body.Close()
 			return nil, fmt.Errorf("failed to read response from %s: %w", repo.String(), err)
@@ -74,41 +75,53 @@ func FetchConfig(repoStr string, key state.NyPublicKey) (*state.CentralCfg, erro
 }
 
 // responsible for central config distribution
-func checkForConfigUpdates(s *state.State) error {
-	if s.CentralCfg.Dist == nil {
+func checkForConfigUpdates(n *Nylon) error {
+	if n.CentralCfg.Dist == nil {
 		return errors.New("nylon is not configured for automatic config distribution")
 	}
-	for _, repoStr := range s.CentralCfg.Dist.Repos {
-		e := s.Env
+	key := n.CentralCfg.Dist.Key
+	currentTimestamp := n.Timestamp
+	repos := slices.Clone(n.CentralCfg.Dist.Repos)
+	for _, repoStr := range repos {
 		go func(repo string) {
 			err := func() error {
-				config, err := FetchConfig(repo, e.CentralCfg.Dist.Key)
+				config, err := FetchConfig(repo, key, n.MaxConfigSize)
 				if err != nil {
 					return err
 				}
-				if config.Timestamp > e.Timestamp && !s.Updating.Swap(true) {
-					e.Log.Info("Found a new config update in repo", "repo", repo)
-					bytes, err := yaml.Marshal(config)
-					if err != nil {
-						e.Log.Error("Error marshalling new config", "err", err.Error())
-						goto err
+				if config.Timestamp <= currentTimestamp {
+					if n.DBG_log_repo_updates {
+						n.Log.Debug(fmt.Sprintf("found old update bundle at %s, skipping", repo))
 					}
-					err = os.WriteFile(e.ConfigPath, bytes, 0700)
-					if err != nil {
-						e.Log.Error("Error writing new config", "err", err.Error())
-						goto err
-					}
-					e.Cancel(errors.New("shutting down for config update"))
 					return nil
-				err:
-					s.Updating.Store(false)
-				} else if state.DBG_log_repo_updates {
-					e.Log.Debug(fmt.Sprintf("found old update bundle at %s, skipping", repo))
 				}
+				n.Dispatch(func() error {
+					if config.Timestamp <= n.Timestamp {
+						return nil
+					}
+					n.Log.Info("Found a new config update in repo", "repo", repo)
+					result, err := n.ApplyCentralConfig(config)
+					if err != nil {
+						n.Log.Error("failed to apply central config update", "repo", repo, "result", result, "err", err)
+						return nil
+					}
+					if n.ConfigPath != "" {
+						bytes, err := yaml.Marshal(config)
+						if err != nil {
+							n.Log.Error("Error marshalling new config", "err", err.Error())
+							return nil
+						}
+						err = os.WriteFile(n.ConfigPath, bytes, 0600)
+						if err != nil {
+							n.Log.Error("Error writing new config", "err", err.Error())
+						}
+					}
+					return nil
+				})
 				return nil
 			}()
-			if err != nil && state.DBG_log_repo_updates {
-				e.Log.Error("Error updating config", "err", err.Error())
+			if err != nil {
+				n.Log.Error("Error updating config", "err", err.Error())
 			}
 		}(repoStr)
 	}

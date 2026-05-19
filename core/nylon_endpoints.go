@@ -3,6 +3,7 @@ package core
 import (
 	"math/rand/v2"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/encodeous/nylon/polyamide/conn"
@@ -16,7 +17,7 @@ type EpPing struct {
 	TimeSent time.Time
 }
 
-func (n *Nylon) Probe(node state.NodeId, ep *state.NylonEndpoint) error {
+func (n *Nylon) Probe(node state.NodeId, ep *state.NylonEndpoint, waitErr bool) error {
 	token := rand.Uint64()
 	ping := &protocol.Ny{
 		Type: &protocol.Ny_ProbeOp{
@@ -26,108 +27,116 @@ func (n *Nylon) Probe(node state.NodeId, ep *state.NylonEndpoint) error {
 			},
 		},
 	}
-	peer := n.Device.LookupPeer(device.NoisePublicKey(n.env.GetNode(node).PubKey))
+	peer := n.Device.LookupPeer(device.NoisePublicKey(n.GetNode(node).PubKey))
 	nep, err := ep.GetWgEndpoint(n.Device)
 	if err != nil {
 		return err
 	}
-	err = n.SendNylon(ping, nep, peer)
-	if err != nil {
-		return err
-	}
 
-	n.PingBuf.Set(token, EpPing{
-		TimeSent: time.Now(),
-	}, ttlcache.DefaultTTL)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+
+	var sendErr error
+	go func() {
+		defer wg.Done()
+		sendErr = n.SendNylon(ping, nep, peer)
+		if sendErr != nil {
+			return
+		}
+
+		n.PingBuf.Set(token, EpPing{
+			TimeSent: time.Now(),
+		}, ttlcache.DefaultTTL)
+	}()
+
+	if waitErr {
+		wg.Wait()
+		return sendErr
+	}
 	return nil
 }
 
 func handleProbe(n *Nylon, pkt *protocol.Ny_Probe, endpoint conn.Endpoint, peer *device.Peer, node state.NodeId) {
-	e := n.env
 	if pkt.ResponseToken == nil {
 		// ping
 		// build pong response
 		res := pkt
-		token := rand.Uint64()
-		res.ResponseToken = &token
+		res.ResponseToken = new(rand.Uint64())
 
 		// send pong
 		err := n.SendNylon(&protocol.Ny{Type: &protocol.Ny_ProbeOp{ProbeOp: pkt}}, endpoint, peer)
 		if err != nil {
-			n.env.Log.Error("Failed to send nylon packet to node", "node", node, "error", err)
+			n.Log.Error("Failed to send nylon packet to node", "node", node, "error", err)
 			return
 		}
 
-		e.Dispatch(func(s *state.State) error {
-			handleProbePing(s, node, endpoint)
+		n.Dispatch(func() error {
+			handleProbePing(n, node, endpoint)
 			return nil
 		})
 	} else {
 		// pong
-		e.Dispatch(func(s *state.State) error {
-			handleProbePong(s, node, pkt.Token, endpoint)
+		n.Dispatch(func() error {
+			handleProbePong(n, node, pkt.Token, endpoint)
 			return nil
 		})
 	}
 }
 
-func handleProbePing(s *state.State, node state.NodeId, ep conn.Endpoint) {
-	if node == s.Id {
+func handleProbePing(n *Nylon, node state.NodeId, wgEndpoint conn.Endpoint) {
+	if node == n.LocalCfg.Id {
 		return
 	}
-	r := Get[*NylonRouter](s)
 	// check if link exists
-	for _, neigh := range s.Neighbours {
+	for _, neigh := range n.RouterState.Neighbours {
 		for _, dep := range neigh.Eps {
 			dep := dep.AsNylonEndpoint()
 			ap, err := dep.DynEP.Get()
-			if err == nil && ap == ep.DstIPPort() && neigh.Id == node {
+			if err == nil && ap == wgEndpoint.DstIPPort() && neigh.Id == node {
 				// we have a link
 
 				// refresh wireguard ep
-				dep.WgEndpoint = ep
+				dep.WgEndpoint = wgEndpoint
 
 				if !dep.IsActive() {
-					r.UpdateNeighbour(node)
+					n.UpdateNeighbour(node)
 				}
 				dep.Renew()
 
-				if state.DBG_log_probe {
-					s.Log.Debug("probe from", "addr", ap.String())
+				if n.DBG_log_probe {
+					n.Log.Debug("probe from", "addr", ap.String())
 				}
 				return
 			}
 		}
 	}
 	// create a new link if we dont have a link
-	for _, neigh := range s.Neighbours {
+	for _, neigh := range n.RouterState.Neighbours {
 		if neigh.Id == node {
-			newEp := state.NewEndpoint(state.NewDynamicEndpoint(ep.DstIPPort().String()), true, ep)
+			newEp := state.NewEndpoint(state.NewDynamicEndpoint(wgEndpoint.DstIPPort().String()), true, wgEndpoint, &n.RouterTunables)
 			newEp.Renew()
 			neigh.Eps = append(neigh.Eps, newEp)
 			// push route update to improve convergence time
-			r.UpdateNeighbour(node)
+			n.UpdateNeighbour(node)
 			return
 		}
 	}
 }
 
-func handleProbePong(s *state.State, node state.NodeId, token uint64, ep conn.Endpoint) {
-	n := Get[*Nylon](s)
-	r := Get[*NylonRouter](s)
+func handleProbePong(n *Nylon, node state.NodeId, token uint64, ep conn.Endpoint) {
 	// check if link exists
-	for _, neigh := range s.Neighbours {
-		for _, dpLink := range neigh.Eps {
-			dpLink := dpLink.AsNylonEndpoint()
+	for _, neigh := range n.RouterState.Neighbours {
+		for _, dep := range neigh.Eps {
+			dpLink := dep.AsNylonEndpoint()
 			ap, err := dpLink.DynEP.Get()
 			if err == nil && ap == ep.DstIPPort() && neigh.Id == node {
 				linkHealth, ok := n.PingBuf.GetAndDelete(token)
 				if ok {
 					health := linkHealth.Value()
-					latency := time.Now().Sub(health.TimeSent)
+					latency := time.Since(health.TimeSent)
 					// we have a link
-					if state.DBG_log_probe {
-						s.Log.Debug("probe back", "peer", node, "ping", latency)
+					if n.DBG_log_probe {
+						n.Log.Debug("probe back", "peer", node, "ping", latency)
 					}
 					dpLink.Renew()
 					dpLink.UpdatePing(latency)
@@ -135,44 +144,41 @@ func handleProbePong(s *state.State, node state.NodeId, token uint64, ep conn.En
 					// update wireguard endpoint
 					dpLink.WgEndpoint = ep
 
-					ComputeRoutes(s.RouterState, r)
+					ComputeRoutes(n.RouterState, n)
 				}
 				return
 			}
 		}
 	}
-	s.Log.Warn("probe came back and couldn't find link", "from", ep.DstToString(), "node", node)
-	return
+	n.Log.Warn("probe came back and couldn't find link", "from", ep.DstToString(), "node", node)
 }
 
-func (n *Nylon) probeLinks(s *state.State, active bool) error {
+func (n *Nylon) probeLinks(active bool) error {
 	// probe links
-	for _, neigh := range s.Neighbours {
+	for _, neigh := range n.RouterState.Neighbours {
 		for _, ep := range neigh.Eps {
 			if ep.IsActive() == active {
-				go func() {
-					err := n.Probe(neigh.Id, ep.AsNylonEndpoint())
-					if err != nil {
-						s.Log.Debug("probe failed", "err", err.Error())
-					}
-				}()
+				err := n.Probe(neigh.Id, ep.AsNylonEndpoint(), false)
+				if err != nil {
+					n.Log.Debug("probe failed", "err", err.Error())
+				}
 			}
 		}
 	}
 	return nil
 }
 
-func (n *Nylon) probeNew(s *state.State) error {
+func (n *Nylon) probeNew() error {
 	// probe for new dp links
-	for _, peer := range s.GetPeers(s.Id) {
-		if !s.IsRouter(peer) {
+	for _, peer := range n.GetPeers(n.LocalCfg.Id) {
+		if !n.IsRouter(peer) {
 			continue
 		}
-		neigh := s.GetNeighbour(peer)
+		neigh := n.RouterState.GetNeighbour(peer)
 		if neigh == nil {
 			continue
 		}
-		cfg := s.GetRouter(peer)
+		cfg := n.GetRouter(peer)
 		// assumption: we don't need to connect to the same endpoint again within the scope of the same node
 		for _, ep := range cfg.Endpoints {
 			ap, err := ep.Get()
@@ -188,14 +194,12 @@ func (n *Nylon) probeNew(s *state.State) error {
 			})
 			if idx == -1 {
 				// add the link to the neighbour
-				dpl := state.NewEndpoint(ep, false, nil)
+				dpl := state.NewEndpoint(ep, false, nil, &n.RouterTunables)
 				neigh.Eps = append(neigh.Eps, dpl)
-				go func() {
-					err := n.Probe(peer, dpl)
-					if err != nil {
-						//s.Log.Debug("discovery probe failed", "err", err.Error())
-					}
-				}()
+				err := n.Probe(peer, dpl, false)
+				if err != nil {
+					//n.Log.Debug("discovery probe failed", "err", err.Error())
+				}
 			}
 		}
 	}

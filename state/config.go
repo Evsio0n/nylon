@@ -3,12 +3,12 @@ package state
 import (
 	"cmp"
 	"fmt"
-	"net"
 	"net/netip"
 	"slices"
 	"strings"
 
-	"github.com/cilium/cilium/pkg/ip"
+	"github.com/goccy/go-yaml"
+	"go4.org/netipx"
 )
 
 type NodeCfg struct {
@@ -71,6 +71,18 @@ type LocalCfg struct {
 	PostDown         []string              `yaml:"post_down,omitempty"`          // a list of commands executed in order after the nylon interface is brought down
 }
 
+func (c *CentralCfg) Clone() (error, *CentralCfg) {
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return err, nil
+	}
+	var dst CentralCfg
+	if err = yaml.Unmarshal(data, &dst); err != nil {
+		return err, nil
+	}
+	return nil, &dst
+}
+
 // GetPrefixes returns all unique prefixes from all nodes
 func (c *CentralCfg) GetPrefixes() []netip.Prefix {
 	prefixMap := make(map[netip.Prefix]bool)
@@ -118,50 +130,27 @@ func parseSymbolList(s string, validSymbols []string) ([]string, error) {
 			continue
 		}
 		if !slices.Contains(validSymbols, x) {
-			return nil, fmt.Errorf(`%s is not a valid node/group`, x)
+			return nil, fmt.Errorf(`invalid graph: %s is not a valid node/group`, x)
 		}
 		line = append(line, x)
 	}
 	if len(line) == 0 {
-		return nil, fmt.Errorf(`node/group list must not be empty`)
+		return nil, fmt.Errorf(`invalid graph: node/group list must not be empty`)
 	}
 	slices.Sort(line)
 	return line, nil
 }
 
-func toIPNets(prefixes []netip.Prefix) []*net.IPNet {
-	nets := make([]*net.IPNet, 0, len(prefixes))
-	for _, p := range prefixes {
-		if p.IsValid() {
-			nets = append(nets, &net.IPNet{
-				IP:   p.Addr().AsSlice(),
-				Mask: net.CIDRMask(p.Bits(), p.Addr().BitLen()),
-			})
-		}
+func MakeSet(prefix []netip.Prefix) *netipx.IPSet {
+	builder := netipx.IPSetBuilder{}
+	for _, pfx := range prefix {
+		builder.AddPrefix(pfx)
 	}
-	return nets
-}
-
-func fromIPNets(nets []*net.IPNet) []netip.Prefix {
-	output := make([]netip.Prefix, 0, len(nets))
-	for _, n := range nets {
-		if addr, ok := netip.AddrFromSlice(n.IP); ok {
-			ones, _ := n.Mask.Size()
-			output = append(output, netip.PrefixFrom(addr.Unmap(), ones))
-		}
+	res, err := builder.IPSet()
+	if err != nil {
+		panic(err)
 	}
-	return output
-}
-
-func SubtractPrefix(includesPrefix, excludesPrefix []netip.Prefix) []netip.Prefix {
-	result := ip.RemoveCIDRs(toIPNets(includesPrefix), toIPNets(excludesPrefix))
-	ipv4, ipv6 := ip.CoalesceCIDRs(result)
-	return fromIPNets(append(ipv4, ipv6...))
-}
-
-func CoalescePrefix(prefixes []netip.Prefix) []netip.Prefix {
-	ipv4, ipv6 := ip.CoalesceCIDRs(toIPNets(prefixes))
-	return fromIPNets(append(ipv4, ipv6...))
+	return res
 }
 
 /*
@@ -201,7 +190,7 @@ func ParseGraph(graph []string, nodes []string) ([]Pair[NodeId, NodeId], error) 
 			}
 			grp := strings.TrimSpace(spl[0])
 			if slices.Contains(nodes, grp) {
-				return nil, fmt.Errorf("group name must not be a node name: %s", grp)
+				return nil, fmt.Errorf("invalid graph: group name must not be a node name: %s", grp)
 			}
 			symbols = append(symbols, grp)
 		}
@@ -221,7 +210,7 @@ func ParseGraph(graph []string, nodes []string) ([]Pair[NodeId, NodeId], error) 
 			spl := strings.Split(line, "=")
 			grp := strings.TrimSpace(spl[0])
 			if _, ok := groups[grp]; ok {
-				return nil, fmt.Errorf("duplicate group name: %s", grp)
+				return nil, fmt.Errorf("invalid graph: duplicate group name: %s", grp)
 			}
 			lst, err := parseSymbolList(spl[1], symbols)
 			if err != nil {
@@ -248,7 +237,7 @@ func ParseGraph(graph []string, nodes []string) ([]Pair[NodeId, NodeId], error) 
 				return nil, err
 			}
 			if len(names) < 2 {
-				return nil, fmt.Errorf("invalid pairing, %v", names)
+				return nil, fmt.Errorf("invalid graph: invalid pairing, %v", names)
 			}
 			interconnectNodes := make([]NodeId, 0)
 			for _, name := range names {
@@ -279,7 +268,7 @@ func ParseGraph(graph []string, nodes []string) ([]Pair[NodeId, NodeId], error) 
 				cycleNodes = append(cycleNodes, node)
 			}
 			slices.Sort(cycleNodes)
-			return nil, fmt.Errorf("cycle detected in graph: %v", cycleNodes)
+			return nil, fmt.Errorf("invalid graph: cycle detected in graph: %v", cycleNodes)
 		}
 		delete(topo, group)
 

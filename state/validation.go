@@ -4,24 +4,11 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
-	"os"
-	"path"
-	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 )
 
 var namePattern, _ = regexp.Compile("^[0-9a-z._/-]+$")
-
-func PathValidator(s string) error {
-	_, err := os.Stat(path.Dir(s))
-	if err != nil {
-		return err
-	}
-	_, err = filepath.Abs(s)
-	return err
-}
 
 func NameValidator(s string) error {
 	if !namePattern.MatchString(s) {
@@ -33,12 +20,7 @@ func NameValidator(s string) error {
 	return nil
 }
 
-func PortValidator(s string) error {
-	_, err := strconv.ParseUint(s, 10, 16)
-	return err
-}
-
-func NodeConfigValidator(node *LocalCfg) error {
+func NodeConfigValidator(central *CentralCfg, node *LocalCfg) error {
 	err := NameValidator(string(node.Id))
 	if err != nil {
 		return err
@@ -79,6 +61,10 @@ func NodeConfigValidator(node *LocalCfg) error {
 		if !p.IsValid() {
 			return fmt.Errorf("invalid prefix %s", p)
 		}
+	}
+	// check that node is in central config
+	if central != nil && !central.IsNode(node.Id) {
+		return fmt.Errorf("node %s is not in central config", node.Id)
 	}
 	return nil
 }
@@ -206,6 +192,18 @@ func CentralConfigValidator(cfg *CentralCfg) error {
 			}
 		default:
 			return fmt.Errorf("unknown prefix health type for prefix %s", p.GetPrefix())
+		}
+	}
+
+	// ensure that passive nodes only advertise static prefixes
+	for _, client := range cfg.Clients {
+		for _, prefix := range client.Prefixes {
+			switch prefix.PrefixHealth.(type) {
+			case *StaticPrefixHealth:
+				// ok
+			default:
+				return fmt.Errorf("passive clients may not advertise non-static prefixes")
+			}
 		}
 	}
 	return nil
