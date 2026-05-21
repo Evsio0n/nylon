@@ -3,6 +3,7 @@ module github.com/encodeous/nylon
 go 1.26.3
 
 require (
+	github.com/Evsio0n/nylon-controlplane v0.0.0
 	github.com/digineo/go-ping v1.2.0
 	github.com/dustin/go-broadcast v0.0.0-20211018055107-71439988bd91
 	github.com/encodeous/metric v0.0.0-20251111175231-f339c2f7c4bd
@@ -23,12 +24,15 @@ require (
 	go.uber.org/goleak v1.3.0
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
 	golang.org/x/crypto v0.50.0
+	golang.org/x/mobile v0.0.0-20260410095206-2cfb76559b7b
 	golang.org/x/net v0.53.0
 	golang.org/x/sys v0.43.0
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2
 	google.golang.org/protobuf v1.36.10
 	gvisor.dev/gvisor v0.0.0-20250503011706-39ed1f5ac29c
 )
+
+replace github.com/Evsio0n/nylon-controlplane => ../nylon-controlplane
 
 require (
 	dario.cat/mergo v1.0.2 // indirect
@@ -83,8 +87,10 @@ require (
 	go.opentelemetry.io/otel/sdk v1.39.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.39.0 // indirect
 	go.opentelemetry.io/otel/trace v1.41.0 // indirect
+	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
+	golang.org/x/tools v0.44.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

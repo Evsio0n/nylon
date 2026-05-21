@@ -2,11 +2,9 @@ package core
 
 import (
 	"context"
-	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -16,12 +14,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Evsio0n/nylon-controlplane/webui"
 	"github.com/encodeous/nylon/state"
 	"golang.org/x/net/websocket"
 )
-
-//go:embed ui
-var uiFS embed.FS
 
 const (
 	defaultControlPlaneAddr = "127.0.0.1:58175"
@@ -171,17 +167,12 @@ func (cp *ControlPlane) Init(n *Nylon) error {
 	mux.HandleFunc("GET "+apiV1Prefix+"/topology", cp.handleTopology)
 
 	// Phase 3: Embedded Web UI (SPA)
-	uiSub, err := fs.Sub(uiFS, "ui")
-	if err != nil {
-		n.Log.Warn("control plane: failed to create UI subtree", "error", err)
-	} else {
-		fileServer := http.FileServer(http.FS(uiSub))
-		mux.Handle("/ui/", http.StripPrefix("/ui/", fileServer))
-		// Root redirect to /ui/
-		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, "/ui/", http.StatusFound)
-		})
-	}
+	fileServer := http.FileServer(http.FS(webui.FS()))
+	mux.Handle("/ui/", http.StripPrefix("/ui/", fileServer))
+	// Root redirect to /ui/
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ui/", http.StatusFound)
+	})
 
 	handler := mux
 
