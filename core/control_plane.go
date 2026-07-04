@@ -218,12 +218,22 @@ func (cp *ControlPlane) Cleanup(s *state.State) error {
 	// Close all WebSocket clients first
 	cp.wsClients.closeAll()
 
+	var shutdownErr error
 	if cp.server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return cp.server.Shutdown(ctx)
+		if err := cp.server.Shutdown(ctx); err != nil {
+			shutdownErr = err
+		}
+		cancel()
 	}
-	return nil
+	if cp.meshServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := cp.meshServer.Shutdown(ctx); shutdownErr == nil && err != nil {
+			shutdownErr = err
+		}
+		cancel()
+	}
+	return shutdownErr
 }
 
 // --- Phase 1: Read-only API handlers ---
@@ -612,14 +622,25 @@ func (cp *ControlPlane) listenMeshDelayed(s *state.State, handler http.Handler) 
 	var ln net.Listener
 	var err error
 	for attempt := 0; attempt < 30; attempt++ {
+		if s.Context.Err() != nil {
+			return
+		}
 		ln, err = net.Listen("tcp", meshAddr)
 		if err == nil {
 			break
 		}
-		time.Sleep(1 * time.Second)
+		select {
+		case <-s.Context.Done():
+			return
+		case <-time.After(1 * time.Second):
+		}
 	}
 	if err != nil {
 		s.Log.Warn("control plane: mesh listener gave up", "addr", meshAddr, "error", err)
+		return
+	}
+	if s.Context.Err() != nil {
+		ln.Close()
 		return
 	}
 

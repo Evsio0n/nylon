@@ -76,6 +76,27 @@ func TestNodeConfigValidator_MTU(t *testing.T) {
 	assert.ErrorContains(t, NodeConfigValidator(&base), "mtu must be between")
 }
 
+func TestNodeConfigValidator_FragmentMTU(t *testing.T) {
+	base := LocalCfg{
+		Id:   "valid-node",
+		Port: 5,
+		Key:  [32]byte{1},
+	}
+	assert.NoError(t, NodeConfigValidator(&base))
+
+	base.FragmentMTU = MinMTU
+	assert.NoError(t, NodeConfigValidator(&base))
+
+	base.FragmentMTU = MaxMTU
+	assert.NoError(t, NodeConfigValidator(&base))
+
+	base.FragmentMTU = MinMTU - 1
+	assert.ErrorContains(t, NodeConfigValidator(&base), "fragment_mtu must be between")
+
+	base.FragmentMTU = MaxMTU + 1
+	assert.ErrorContains(t, NodeConfigValidator(&base), "fragment_mtu must be between")
+}
+
 func TestNodeConfigValidator_ExitNodeChainRejected(t *testing.T) {
 	base := LocalCfg{
 		Id:   "valid-node",

@@ -50,14 +50,18 @@ func (s Signal) Wait() {
 }
 
 type VirtualLink struct {
-	Edge       state.Pair[bindtest.ChannelEndpoint2, bindtest.ChannelEndpoint2]
-	Latency    time.Duration
-	Jitter     time.Duration
-	PacketLoss float64
+	Edge          state.Pair[bindtest.ChannelEndpoint2, bindtest.ChannelEndpoint2]
+	Latency       time.Duration
+	Jitter        time.Duration
+	PacketLoss    float64
+	MaxPacketSize int
 }
 
 func (v *VirtualLink) simulate(pkt []byte, len int, from, to bindtest.ChannelEndpoint2, i *InMemoryNetwork) {
 	//fmt.Printf("begin send: %s -> %s\n", from.DstToString(), to.DstToString())
+	if v.MaxPacketSize > 0 && len > v.MaxPacketSize {
+		return
+	}
 	if rand.Float64() < v.PacketLoss {
 		// drop
 		//fmt.Printf("dropped send: %s -> %s\n", from.DstToString(), to.DstToString())
@@ -97,6 +101,11 @@ func (v *VirtualLink) WithLatency(lat, jitter time.Duration) *VirtualLink {
 
 func (v *VirtualLink) WithPacketLoss(loss float64) *VirtualLink {
 	v.PacketLoss = loss
+	return v
+}
+
+func (v *VirtualLink) WithMaxPacketSize(size int) *VirtualLink {
+	v.MaxPacketSize = size
 	return v
 }
 

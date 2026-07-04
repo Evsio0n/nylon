@@ -49,6 +49,9 @@ func NodeConfigValidator(node *LocalCfg) error {
 	if node.MTU != 0 && (node.MTU < MinMTU || node.MTU > MaxMTU) {
 		return fmt.Errorf("mtu must be between %d and %d", MinMTU, MaxMTU)
 	}
+	if node.FragmentMTU != 0 && (node.FragmentMTU < MinMTU || node.FragmentMTU > MaxMTU) {
+		return fmt.Errorf("fragment_mtu must be between %d and %d", MinMTU, MaxMTU)
+	}
 	if node.Key == [32]byte{} {
 		return fmt.Errorf("private key must not be empty")
 	}

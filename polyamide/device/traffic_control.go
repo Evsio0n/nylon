@@ -61,18 +61,20 @@ func TCFBounce(dev *Device, packet *TCElement) (TCAction, error) {
 }
 
 type TCElement struct {
-	Buffer   *[MaxMessageSize]byte // slice holding the packet data
-	Packet   []byte                // slice of "buffer" (always!)
-	FromEp   conn.Endpoint         // what the source wireguard UDP endpoint (if any) is
-	ToEp     conn.Endpoint         // which wireguard UDP endpoint to send this Packet to
-	FromPeer *Peer                 // which peer (if any) sent us this Packet
-	ToPeer   *Peer                 // which peer to send this Packet to
-	Priority TCPriority            // Priority, higher is better
+	Buffer    *[MaxMessageSize]byte // slice holding the packet data
+	Packet    []byte                // slice of "buffer" (always!)
+	Fragments []*TCElement          // optional replacement packets produced by a TC filter
+	FromEp    conn.Endpoint         // what the source wireguard UDP endpoint (if any) is
+	ToEp      conn.Endpoint         // which wireguard UDP endpoint to send this Packet to
+	FromPeer  *Peer                 // which peer (if any) sent us this Packet
+	ToPeer    *Peer                 // which peer to send this Packet to
+	Priority  TCPriority            // Priority, higher is better
 }
 
 func (elem *TCElement) clearPointers() {
 	elem.Buffer = nil
 	elem.Packet = nil
+	elem.Fragments = nil
 	elem.FromEp = nil
 	elem.ToEp = nil
 	elem.FromPeer = nil
@@ -143,6 +145,23 @@ func (device *Device) TCBatch(batch []*TCElement, tcs *TCState) {
 			tcs.bouncePkts = append(tcs.bouncePkts, elem)
 		case TcForward:
 			// reroute/forward packet
+			if len(elem.Fragments) > 0 {
+				for _, frag := range elem.Fragments {
+					if frag == nil {
+						continue
+					}
+					if frag.ToPeer == nil {
+						device.Log.Errorf("Failed to forward fragment to destination, toPeer not set")
+						device.PutMessageBuffer(frag.Buffer)
+						device.PutTCElement(frag)
+						continue
+					}
+					tcs.priority[frag.Priority] = append(tcs.priority[frag.Priority], frag)
+				}
+				device.PutMessageBuffer(elem.Buffer)
+				device.PutTCElement(elem)
+				continue
+			}
 			if elem.ToPeer == nil {
 				device.Log.Errorf("Failed to forward packet to destination, toPeer not set")
 				device.PutMessageBuffer(elem.Buffer)

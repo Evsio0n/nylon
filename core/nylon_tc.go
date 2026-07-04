@@ -74,6 +74,12 @@ func (n *Nylon) InstallTC(s *state.State) {
 			}
 			packet.ToPeer = entry.Peer
 			packet.Priority = device.TcMediumPriority
+			if _, err := n.maybeFragmentForward(s, packet); err != nil {
+				if state.DBG_trace_tc {
+					t.Submit(fmt.Sprintf("ExitDrop: %v -> %v, exit %s, reason %v\n", src, dst, s.LocalCfg.ExitNode, err))
+				}
+				return device.TcDrop, nil
+			}
 			if state.DBG_trace_tc {
 				t.Submit(fmt.Sprintf("ExitEncap: %v -> %v, exit %s via %s\n", src, dst, s.LocalCfg.ExitNode, entry.Nh))
 			}
@@ -96,6 +102,9 @@ func (n *Nylon) InstallTC(s *state.State) {
 			entry, ok := r.ForwardTable.Lookup(packet.GetDst())
 			if ok && !packet.Incoming() {
 				packet.ToPeer = entry.Peer
+				if _, err := n.maybeFragmentForward(s, packet); err != nil {
+					return device.TcDrop, err
+				}
 				if state.DBG_trace_tc {
 					t.Submit(fmt.Sprintf("Fwd packet: %v -> %v, via %s\n", packet.GetSrc(), packet.GetDst(), entry.Nh))
 				}
@@ -109,6 +118,9 @@ func (n *Nylon) InstallTC(s *state.State) {
 			entry, ok := r.ForwardTable.Lookup(packet.GetDst())
 			if ok {
 				packet.ToPeer = entry.Peer
+				if _, err := n.maybeFragmentForward(s, packet); err != nil {
+					return device.TcDrop, err
+				}
 				if state.DBG_trace_tc {
 					t.Submit(fmt.Sprintf("Fwd packet: %v -> %v, via %s\n", packet.GetSrc(), packet.GetDst(), entry.Nh))
 				}
@@ -158,6 +170,15 @@ func (n *Nylon) InstallTC(s *state.State) {
 	n.Device.InstallFilter(func(dev *device.Device, packet *device.TCElement) (device.TCAction, error) {
 		if packet.Incoming() && packet.GetIPVersion() == NyProtoId {
 			n.handleNylonPacket(packet.Payload(), packet.FromEp, packet.FromPeer)
+			return device.TcDrop, nil
+		}
+		return device.TcPass, nil
+	})
+
+	// handle per-hop nylon fragments
+	n.Device.InstallFilter(func(dev *device.Device, packet *device.TCElement) (device.TCAction, error) {
+		if packet.Incoming() && packet.GetIPVersion() == NyFragProtoId {
+			n.handleNylonFragment(packet)
 			return device.TcDrop, nil
 		}
 		return device.TcPass, nil
@@ -254,6 +275,9 @@ func (n *Nylon) handleExitPacket(s *state.State, packet *device.TCElement) (devi
 		packet.Payload()[0]--
 		packet.ToPeer = entry.Peer
 		packet.Priority = device.TcMediumPriority
+		if _, err := n.maybeFragmentForward(s, packet); err != nil {
+			return device.TcDrop, err
+		}
 		if state.DBG_trace_tc {
 			t.Submit(fmt.Sprintf("ExitTransit: origin %s exit %s via %s\n", ep.origin, ep.exit, entry.Nh))
 		}

@@ -53,6 +53,7 @@ type LocalCfg struct {
 	Id                NodeId                // unique id for this node
 	Port              uint16                // Address that the data plane can be accessed by
 	MTU               int                   `yaml:"mtu,omitempty"`                 // MTU for the nylon TUN interface. Default: 1420
+	FragmentMTU       int                   `yaml:"fragment_mtu,omitempty"`        // Maximum per-hop WireGuard UDP payload size after Nylon fragmentation. 0 disables fragmentation.
 	Dist              *LocalDistributionCfg `yaml:",omitempty"`                    // distribution configuration
 	UseSystemRouting  bool                  `yaml:"use_system_routing,omitempty"`  // all packets from peers will come out of the TUN interface
 	NoNetConfigure    bool                  `yaml:"no_net_configure,omitempty"`    // do not configure system networking at all
@@ -77,6 +78,10 @@ func (c *LocalCfg) EffectiveMTU() int {
 		return DefaultMTU
 	}
 	return c.MTU
+}
+
+func (c *LocalCfg) EffectiveFragmentMTU() int {
+	return c.FragmentMTU
 }
 
 // GetPrefixes returns all unique prefixes from all nodes
