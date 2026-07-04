@@ -16,6 +16,7 @@ This file defines how an individual node behaves and identifies itself.
 | `id` | `string` | A unique identifier for this node (must match `central.yaml`). | - |
 | `key` | `string` | The WireGuard private key for this node. | - |
 | `port` | `int` | The UDP port Nylon listens on for peer traffic. | `57175` |
+| `mtu` | `int` | TUN interface MTU; lower to `1280` on paths that report `message too long`. | `1420` |
 | `interface_name` | `string` | The name of the TUN interface to create (e.g., `nylon`). | `nylon` / `utunX` |
 | `use_system_routing`| `bool` | If true, all packets from peers will exit through the TUN interface. | `false` |
 | `no_net_configure` | `bool` | If true, Nylon will not attempt to configure system networking/routes. | `false` |

@@ -44,6 +44,10 @@ var (
 
 	// default port
 	DefaultPort = 57175
+	// TUN interface MTU defaults and bounds.
+	DefaultMTU = 1420
+	MinMTU     = 576
+	MaxMTU     = 1420
 
 	EndpointResolveExpiry = time.Minute * 1
 	EndpointResolveDelay  = time.Second * 15

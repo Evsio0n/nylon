@@ -46,6 +46,9 @@ func NodeConfigValidator(node *LocalCfg) error {
 	if node.Port == 0 {
 		return fmt.Errorf("port must be greater than 0")
 	}
+	if node.MTU != 0 && (node.MTU < MinMTU || node.MTU > MaxMTU) {
+		return fmt.Errorf("mtu must be between %d and %d", MinMTU, MaxMTU)
+	}
 	if node.Key == [32]byte{} {
 		return fmt.Errorf("private key must not be empty")
 	}

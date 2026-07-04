@@ -18,6 +18,7 @@ func NewWireGuardDevice(s *state.State, n *Nylon) (dev *device.Device, tunDevice
 
 	var tdev tun.Device
 	isMobile, _ := s.AuxConfig["isMobile"].(bool)
+	mtu := s.LocalCfg.EffectiveMTU()
 
 	// Check for pre-created TUN device (mobile / NetworkExtension)
 	if preTUN, ok := s.AuxConfig["tunDevice"].(tun.Device); ok {
@@ -26,7 +27,7 @@ func NewWireGuardDevice(s *state.State, n *Nylon) (dev *device.Device, tunDevice
 		if runtime.GOOS == "darwin" {
 			itfName = "utun"
 		}
-		tdev, err = tun.CreateTUN(itfName, device.DefaultMTU)
+		tdev, err = tun.CreateTUN(itfName, mtu)
 		if err != nil {
 			return nil, nil, "", fmt.Errorf("failed to create TUN: %v. Check if an interface with the name nylon exists already", err)
 		}
@@ -78,7 +79,10 @@ func NewWireGuardDevice(s *state.State, n *Nylon) (dev *device.Device, tunDevice
 		}
 	}
 
-	s.Log.Info("Created WireGuard interface", "name", itfName, "mobile", isMobile)
+	if actualMTU, err := tdev.MTU(); err == nil {
+		mtu = actualMTU
+	}
+	s.Log.Info("Created WireGuard interface", "name", itfName, "mobile", isMobile, "mtu", mtu)
 	return dev, tdev, itfName, nil
 }
 

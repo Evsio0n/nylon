@@ -1,6 +1,7 @@
 key: 0NcrMcaS1tORCTA88L5ZPE+H6yUMV4e5vRp6iypnPW8=
 id: alice
 port: 57175 # Default: 57175 - UDP port that Nylon listens on
+mtu: 1420 # Default: 1420 - MTU for the Nylon TUN interface. Lower to 1280 if the path reports "message too long"
 
 # the following are optional
 use_system_routing: false # Default: false - all packets from peers will come out of the TUN interface
