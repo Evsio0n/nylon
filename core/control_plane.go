@@ -31,11 +31,13 @@ const (
 // ControlPlane is a NyModule that exposes a REST API + WebSocket
 // for inspecting and managing nylon mesh state.
 type ControlPlane struct {
-	env        *state.Env
-	server     *http.Server
-	meshServer *http.Server
-	trace      *NylonTrace
-	wsClients  wsClientSet
+	env          *state.Env
+	server       *http.Server
+	meshServerMu sync.Mutex
+	meshServer   *http.Server
+	meshDone     chan struct{}
+	trace        *NylonTrace
+	wsClients    wsClientSet
 }
 
 // wsClientSet tracks active WebSocket connections for clean shutdown.
@@ -209,7 +211,11 @@ func (cp *ControlPlane) Init(s *state.State) error {
 
 	// Also listen on mesh interface IP so other nodes can query our API
 	// Must be delayed because WG interface hasn't been created yet at Init time
-	go cp.listenMeshDelayed(s, handler)
+	cp.meshDone = make(chan struct{})
+	go func() {
+		defer close(cp.meshDone)
+		cp.listenMeshDelayed(s, handler)
+	}()
 
 	return nil
 }
@@ -218,12 +224,35 @@ func (cp *ControlPlane) Cleanup(s *state.State) error {
 	// Close all WebSocket clients first
 	cp.wsClients.closeAll()
 
+	var shutdownErr error
 	if cp.server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return cp.server.Shutdown(ctx)
+		if err := cp.server.Shutdown(ctx); err != nil {
+			shutdownErr = err
+		}
+		cancel()
 	}
-	return nil
+
+	cp.meshServerMu.Lock()
+	meshServer := cp.meshServer
+	cp.meshServerMu.Unlock()
+	if meshServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := meshServer.Shutdown(ctx); shutdownErr == nil && err != nil {
+			shutdownErr = err
+		}
+		cancel()
+	}
+	if cp.meshDone != nil {
+		select {
+		case <-cp.meshDone:
+		case <-time.After(5 * time.Second):
+			if shutdownErr == nil {
+				shutdownErr = fmt.Errorf("timed out waiting for mesh listener to stop")
+			}
+		}
+	}
+	return shutdownErr
 }
 
 // --- Phase 1: Read-only API handlers ---
@@ -612,11 +641,18 @@ func (cp *ControlPlane) listenMeshDelayed(s *state.State, handler http.Handler) 
 	var ln net.Listener
 	var err error
 	for attempt := 0; attempt < 30; attempt++ {
+		if s.Context.Err() != nil {
+			return
+		}
 		ln, err = net.Listen("tcp", meshAddr)
 		if err == nil {
 			break
 		}
-		time.Sleep(1 * time.Second)
+		select {
+		case <-s.Context.Done():
+			return
+		case <-time.After(1 * time.Second):
+		}
 	}
 	if err != nil {
 		s.Log.Warn("control plane: mesh listener gave up", "addr", meshAddr, "error", err)
@@ -629,7 +665,21 @@ func (cp *ControlPlane) listenMeshDelayed(s *state.State, handler http.Handler) 
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       30 * time.Second,
 	}
+	cp.meshServerMu.Lock()
+	if s.Context.Err() != nil {
+		cp.meshServerMu.Unlock()
+		_ = ln.Close()
+		return
+	}
 	cp.meshServer = srv
+	cp.meshServerMu.Unlock()
+	defer func() {
+		cp.meshServerMu.Lock()
+		if cp.meshServer == srv {
+			cp.meshServer = nil
+		}
+		cp.meshServerMu.Unlock()
+	}()
 
 	s.Log.Info("control plane mesh listener started", "addr", meshAddr)
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
