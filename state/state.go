@@ -14,7 +14,8 @@ type NyModule interface {
 // State access must be done only on a single Goroutine
 type State struct {
 	*Env
-	Modules map[string]NyModule
+	Modules     map[string]NyModule
+	ModuleOrder []NyModule
 	*RouterState
 }
 

@@ -17,6 +17,9 @@ func NeighContainsFunc(s *state.RouterState, f func(neigh state.NodeId, route st
 }
 
 func (r *NylonRouter) ForwardEntryToNode(node state.NodeId) (RouteTableEntry, bool) {
+	if r == nil || r.State == nil || r.RouterState == nil {
+		return RouteTableEntry{}, false
+	}
 	if node == r.Id {
 		return RouteTableEntry{Nh: r.Id}, true
 	}
@@ -37,7 +40,14 @@ func (r *NylonRouter) ForwardEntryToNode(node state.NodeId) (RouteTableEntry, bo
 	}
 
 	n := Get[*Nylon](r.State)
-	peer := n.Device.LookupPeer(device.NoisePublicKey(r.GetNode(best.Nh).PubKey))
+	if n == nil || n.Device == nil {
+		return RouteTableEntry{}, false
+	}
+	nodeCfg := r.TryGetNode(best.Nh)
+	if nodeCfg == nil {
+		return RouteTableEntry{}, false
+	}
+	peer := n.Device.LookupPeer(device.NoisePublicKey(nodeCfg.PubKey))
 	if peer == nil {
 		return RouteTableEntry{}, false
 	}

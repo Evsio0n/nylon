@@ -213,7 +213,8 @@ func Start(ccfg state.CentralCfg, ncfg state.LocalCfg, logLevel slog.Level, conf
 	}
 
 	s := state.State{
-		Modules: make(map[string]state.NyModule),
+		Modules:     make(map[string]state.NyModule),
+		ModuleOrder: make([]state.NyModule, 0),
 		Env: &state.Env{
 			Context:         ctx,
 			Cancel:          cancel,
@@ -272,6 +273,7 @@ func initModules(s *state.State) error {
 		if err := module.Init(s); err != nil {
 			return err
 		}
+		s.ModuleOrder = append(s.ModuleOrder, module)
 	}
 	return nil
 }
@@ -318,10 +320,19 @@ func Stop(s *state.State) {
 		s.DispatchChannel = nil
 	}
 	s.Log.Info("cleaning up modules")
-	for moduleName, module := range s.Modules {
-		err := module.Cleanup(s)
-		if err != nil {
-			s.Log.Error("error occurred during Stop: ", "module", moduleName, "error", err)
+	if len(s.ModuleOrder) > 0 {
+		for i := len(s.ModuleOrder) - 1; i >= 0; i-- {
+			module := s.ModuleOrder[i]
+			if err := module.Cleanup(s); err != nil {
+				s.Log.Error("error occurred during Stop: ", "module", reflect.TypeOf(module).String(), "error", err)
+			}
+		}
+	} else {
+		// Keep compatibility with States assembled directly by tests or embedders.
+		for moduleName, module := range s.Modules {
+			if err := module.Cleanup(s); err != nil {
+				s.Log.Error("error occurred during Stop: ", "module", moduleName, "error", err)
+			}
 		}
 	}
 	s.Log.Info("stopped")

@@ -29,6 +29,11 @@ func InitInterface(logger *slog.Logger, ifName string, fwmark uint32) error {
 	// Nylon's own WireGuard UDP socket carries the fwmark and falls through to the main table,
 	// preventing routing loops when other VPNs (e.g. Tailscale) share the same host.
 	table := fmt.Sprintf("%d", fwmark)
+	// A process crash can leave policy rules and routes behind. Make startup
+	// idempotent so a supervisor can restart Nylon without manual cleanup.
+	for Exec(logger, "ip", "rule", "del", "not", "fwmark", table, "table", table, "priority", "32764") == nil {
+	}
+	_ = Exec(logger, "ip", "route", "flush", "table", table)
 	return Exec(logger, "ip", "rule", "add", "not", "fwmark", table, "table", table, "priority", "32764")
 }
 
