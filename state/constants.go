@@ -48,6 +48,7 @@ var (
 	DefaultMTU = 1420
 	MinMTU     = 576
 	MaxMTU     = 1420
+	MaxTunMTU  = 1500
 
 	EndpointResolveExpiry = time.Minute * 1
 	EndpointResolveDelay  = time.Second * 15

@@ -21,6 +21,9 @@ const (
 	TcForward
 	// TcDrop will completely drop the packet
 	TcDrop
+	// TcReprocess reruns filters after in-place decapsulation, retaining the
+	// current batch and ownership of the element's message buffer.
+	TcReprocess
 )
 
 const (
@@ -61,18 +64,20 @@ func TCFBounce(dev *Device, packet *TCElement) (TCAction, error) {
 }
 
 type TCElement struct {
-	Buffer   *[MaxMessageSize]byte // slice holding the packet data
-	Packet   []byte                // slice of "buffer" (always!)
-	FromEp   conn.Endpoint         // what the source wireguard UDP endpoint (if any) is
-	ToEp     conn.Endpoint         // which wireguard UDP endpoint to send this Packet to
-	FromPeer *Peer                 // which peer (if any) sent us this Packet
-	ToPeer   *Peer                 // which peer to send this Packet to
-	Priority TCPriority            // Priority, higher is better
+	Buffer    *[MaxMessageSize]byte // slice holding the packet data
+	Packet    []byte                // slice of "buffer" (always!)
+	Fragments []*TCElement          // optional replacement packets produced by a TC filter
+	FromEp    conn.Endpoint         // what the source wireguard UDP endpoint (if any) is
+	ToEp      conn.Endpoint         // which wireguard UDP endpoint to send this Packet to
+	FromPeer  *Peer                 // which peer (if any) sent us this Packet
+	ToPeer    *Peer                 // which peer to send this Packet to
+	Priority  TCPriority            // Priority, higher is better
 }
 
 func (elem *TCElement) clearPointers() {
 	elem.Buffer = nil
 	elem.Packet = nil
+	elem.Fragments = nil
 	elem.FromEp = nil
 	elem.ToEp = nil
 	elem.FromPeer = nil
@@ -105,10 +110,24 @@ func NewTCState() *TCState {
 	}
 }
 
-func (device *Device) TCBatch(batch []*TCElement, tcs *TCState) {
-	for i, elem := range batch {
-		// process TC Filters
+// Bound nested decapsulation and misbehaving filters without recursive calls.
+const maxTCReprocess = 8
+
+func (device *Device) applyTCFilters(elem *TCElement) TCAction {
+	for pass := 0; pass <= maxTCReprocess; pass++ {
 		act := TcPass
+		if pass > 0 {
+			// A decapsulator supplies the exact inner length. Reject truncated
+			// headers before ParsePacket reads a length from pooled buffer data.
+			if len(elem.Packet) < PolyHeaderSize ||
+				(elem.GetIPVersion() == 4 && len(elem.Packet) < 20) ||
+				(elem.GetIPVersion() == 6 && len(elem.Packet) < 40) {
+				return TcDrop
+			}
+			if int(elem.GetLength()) > len(elem.Packet) {
+				return TcDrop
+			}
+		}
 		elem.ParsePacket()
 		if !elem.Validate() {
 			device.Log.Errorf("Found malformed packet, dropping packet")
@@ -126,10 +145,22 @@ func (device *Device) TCBatch(batch []*TCElement, tcs *TCState) {
 				}
 			}
 		}
+		if act == TcReprocess {
+			continue
+		}
 		if act == TcPass {
 			device.Log.Errorf("Unexpectedly passed all filters!")
 			act = TcDrop
 		}
+		return act
+	}
+	device.Log.Errorf("TC packet exceeded decapsulation limit, dropping packet")
+	return TcDrop
+}
+
+func (device *Device) TCBatch(batch []*TCElement, tcs *TCState) {
+	for i, elem := range batch {
+		act := device.applyTCFilters(elem)
 
 		batch[i] = nil
 
@@ -143,6 +174,23 @@ func (device *Device) TCBatch(batch []*TCElement, tcs *TCState) {
 			tcs.bouncePkts = append(tcs.bouncePkts, elem)
 		case TcForward:
 			// reroute/forward packet
+			if len(elem.Fragments) > 0 {
+				for _, frag := range elem.Fragments {
+					if frag == nil {
+						continue
+					}
+					if frag.ToPeer == nil {
+						device.Log.Errorf("Failed to forward fragment to destination, toPeer not set")
+						device.PutMessageBuffer(frag.Buffer)
+						device.PutTCElement(frag)
+						continue
+					}
+					tcs.priority[frag.Priority] = append(tcs.priority[frag.Priority], frag)
+				}
+				device.PutMessageBuffer(elem.Buffer)
+				device.PutTCElement(elem)
+				continue
+			}
 			if elem.ToPeer == nil {
 				device.Log.Errorf("Failed to forward packet to destination, toPeer not set")
 				device.PutMessageBuffer(elem.Buffer)

@@ -3,6 +3,8 @@ package core
 import (
 	"net"
 	"net/netip"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/encodeous/nylon/polyamide/device"
@@ -21,6 +23,9 @@ type Nylon struct {
 	itfName             string
 	fwmark              uint32
 	prevInstalledRoutes []netip.Prefix
+	fragSeq             atomic.Uint64
+	fragMu              sync.Mutex
+	fragReassembly      map[nylonFragmentKey]*nylonFragmentBuffer
 }
 
 func (n *Nylon) Init(s *state.State) error {
@@ -53,6 +58,12 @@ func (n *Nylon) Init(s *state.State) error {
 		ttlcache.WithDisableTouchOnHit[uint64, EpPing](),
 	)
 	go n.PingBuf.Start()
+	n.fragSeq.Store(uint64(time.Now().UnixNano()))
+	n.fragReassembly = make(map[nylonFragmentKey]*nylonFragmentBuffer)
+	s.Env.RepeatTask(func(s *state.State) error {
+		n.gcFragments(time.Now())
+		return nil
+	}, state.GcDelay)
 
 	s.Env.RepeatTask(nylonGc, state.GcDelay)
 
